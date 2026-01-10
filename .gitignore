@@ -1,6 +1,7 @@
-__pycache__/
-.ipynb_checkpoints/
+ingestion/news_sources/__pycache__/
+ingestion/news_sources/gnews_text_test.py
+ingestion/news_sources/testing_ingestion.py
+data/
+notebooks/
 .env
-
-data/raw/
-data/processed/
+proportion

@@ -1,0 +1,15 @@
+# Core HTTP & config
+requests
+python-dotenv
+pyyaml
+
+# News ingestion & extraction
+newspaper3k
+readability-lxml
+lxml
+
+# Database
+pymongo
+
+# Deduplication
+xxhash

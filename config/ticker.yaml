@@ -1,0 +1,73 @@
+# Master entity configuration for ingestion
+# Used by: news ingestion, impact signals, clustering, HIR calculation
+
+companies:
+  - entity_id: company_us_tech_001
+    name: Apple
+    ticker: AAPL
+    market: US
+    exchange: NASDAQ
+    sector: Technology
+
+  - entity_id: company_us_tech_002
+    name: Microsoft
+    ticker: MSFT
+    market: US
+    exchange: NASDAQ
+    sector: Technology
+
+  - entity_id: company_us_tech_003
+    name: Google
+    ticker: GOOGL
+    market: US
+    exchange: NASDAQ
+    sector: Technology
+
+  - entity_id: company_us_tech_004
+    name: Amazon
+    ticker: AMZN
+    market: US
+    exchange: NASDAQ
+    sector: E-commerce
+
+  - entity_id: company_us_tech_005
+    name: Meta
+    ticker: META
+    market: US
+    exchange: NASDAQ
+    sector: Social Media
+
+  - entity_id: company_us_auto_001
+    name: Tesla
+    ticker: TSLA
+    market: US
+    exchange: NASDAQ
+    sector: Automotive
+
+  - entity_id: company_us_chip_001
+    name: NVIDIA
+    ticker: NVDA
+    market: US
+    exchange: NASDAQ
+    sector: Semiconductors
+
+  - entity_id: company_us_bank_001
+    name: JPMorgan Chase
+    ticker: JPM
+    market: US
+    exchange: NYSE
+    sector: Banking
+
+  - entity_id: company_in_cong_001
+    name: Reliance Industries
+    ticker: RELIANCE.NS
+    market: India
+    exchange: NSE
+    sector: Conglomerate
+
+  - entity_id: company_in_it_001
+    name: Tata Consultancy Services
+    ticker: TCS.NS
+    market: India
+    exchange: NSE
+    sector: IT Services
