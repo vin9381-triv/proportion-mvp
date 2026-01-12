@@ -1,8 +1,5 @@
-__pycache__/
-.ipynb_checkpoints/
+ingestion/news_sources
+data/
+notebooks/
 .env
-
-data/raw/
-data/processed/
-clear
-
+proportion
