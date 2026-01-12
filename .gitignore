@@ -1,7 +1,5 @@
-__pycache__/
-.ipynb_checkpoints/
+ingestion/
+data/
+notebooks/
 .env
-
-data/raw/
-data/processed/
 proportion

@@ -1,4 +1,4 @@
-ingestion/news_sources
+ingestion/
 data/
 notebooks/
 .env
