@@ -6,3 +6,5 @@ notebooks/
 .env
 proportion
 processing
+ingestion/__pycache__/
+ingestion/utils/__pycache__/

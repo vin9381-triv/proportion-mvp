@@ -57,17 +57,3 @@ companies:
     market: US
     exchange: NYSE
     sector: Banking
-
-  - entity_id: company_in_cong_001
-    name: Reliance Industries
-    ticker: RELIANCE.NS
-    market: India
-    exchange: NSE
-    sector: Conglomerate
-
-  - entity_id: company_in_it_001
-    name: Tata Consultancy Services
-    ticker: TCS.NS
-    market: India
-    exchange: NSE
-    sector: IT Services

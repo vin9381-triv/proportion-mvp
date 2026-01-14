@@ -7,7 +7,7 @@ from pymongo import MongoClient
 # - No credentials required for local development
 # - Connection string can be externalized later if needed
 MONGO_URI = "mongodb://localhost:27017/"
-DB_NAME = "proportion_db"
+DB_NAME = "proportion_db_v1"
 COLLECTION_NAME = "articles_raw"
 
 
