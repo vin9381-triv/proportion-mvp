@@ -1,15 +1,35 @@
-ingestion
-data/
-notebooks/
+############################
+# Python
+############################
+__pycache__/
+*.pyc
+*.pyo
+
+############################
+# Virtual environments
+############################
 .env
-proportion
-processing/semantic_dedup/__init__.py
-processing/__init__.py
-processing/common/__init__.py
-processing/common/__pycache__/
-processing/clustering/__pycache__/
-processing/clustering/__init__.py
-processing/semantic_dedup/__pycache__/
-processing/semantic_dedup/logs
+proportion/
 
+############################
+# Data & artifacts
+############################
+data/
+data/raw/
+data/processed/
 
+############################
+# Notebooks
+############################
+notebooks/
+.ipynb_checkpoints/
+
+############################
+# Logs
+############################
+logs/
+
+############################
+# OS
+############################
+.DS_Store
