@@ -1,5 +1,22 @@
-ingestion/
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.env/
+proportion/
+venv/
+
+# Data artifacts
 data/
+data/raw/
+data/processed/
+
+# Notebooks
 notebooks/
-.env
-proportion
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
