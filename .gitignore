@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 
 # Virtual environments
-.env/
+.env
 proportion/
 venv/
 
@@ -20,3 +20,6 @@ notebooks/
 
 # OS
 .DS_Store
+
+#data logs
+processing/semantic_dedup/logs
