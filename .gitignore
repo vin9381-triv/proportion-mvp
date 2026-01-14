@@ -1,10 +1,22 @@
-ingestion/news_sources/__pycache__/
-ingestion/news_sources/gnews_text_test.py
-ingestion/news_sources/testing_ingestion.py
+############################
+# Python bytecode
+############################
+__pycache__/
+*.pyc
+*.pyo
+
+############################
+# Virtual environments
+############################
+.env
+proportion/
+
+############################
+# Data & notebooks
+############################
 data/
 notebooks/
-.env
-proportion
-processing
-ingestion/__pycache__/
-ingestion/utils/__pycache__/
+.ipynb_checkpoints/
+
+############################
+processing/
