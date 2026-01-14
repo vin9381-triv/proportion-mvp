@@ -3,3 +3,13 @@ data/
 notebooks/
 .env
 proportion
+processing/semantic_dedup/__init__.py
+processing/__init__.py
+processing/common/__init__.py
+processing/common/__pycache__/
+processing/clustering/__pycache__/
+processing/clustering/__init__.py
+processing/semantic_dedup/__pycache__/
+processing/semantic_dedup/logs
+
+
