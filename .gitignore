@@ -1,25 +1,35 @@
+############################
 # Python
+############################
 __pycache__/
 *.pyc
+*.pyo
 
+############################
 # Virtual environments
+############################
 .env
 proportion/
-venv/
 
-# Data artifacts
+############################
+# Data & artifacts
+############################
 data/
 data/raw/
 data/processed/
 
+############################
 # Notebooks
+############################
 notebooks/
-
-# Jupyter
 .ipynb_checkpoints/
 
-# OS
-.DS_Store
+############################
+# Logs
+############################
+logs/
 
-#data logs
-processing/semantic_dedup/logs
+############################
+# OS
+############################
+.DS_Store

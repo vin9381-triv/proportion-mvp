@@ -16,10 +16,12 @@ BULK_SIZE = 16
 
 def embed_articles():
     """
-    REAL PIPELINE (v1):
-    - Reads from articles_raw (with published_at_utc)
-    - Writes to articles_embedded
-    - Raw collection is NEVER modified
+    IDENTITY-SAFE PIPELINE (v1):
+
+    - Reads from articles_raw
+    - Embeds ONLY raw articles that are not yet embedded
+    - Writes exactly one embedded doc per raw article
+    - Safe to run daily / repeatedly
     """
 
     raw_col = get_raw_articles_collection()
@@ -27,11 +29,24 @@ def embed_articles():
 
     model = SentenceTransformer(MODEL_NAME)
 
-    cursor = raw_col.find()
+    # 🔑 Find already embedded raw_article_ids
+    embedded_ids = set(
+        doc["raw_article_id"]
+        for doc in emb_col.find({}, {"raw_article_id": 1})
+    )
+
+    print(f"🔎 Found {len(embedded_ids)} already embedded articles")
+
+    # Only embed NEW raw articles
+    cursor = raw_col.find(
+        {"_id": {"$nin": list(embedded_ids)}}
+    )
+
     bulk_ops = []
     processed = 0
+    skipped = 0
 
-    print("🚀 Starting embedding pipeline (v1)")
+    print("🚀 Starting embedding pipeline (idempotent)")
 
     for doc in cursor:
         try:
@@ -39,6 +54,7 @@ def embed_articles():
             raw_text = doc.get("raw_text", "")
 
             if not title or not raw_text:
+                skipped += 1
                 continue
 
             body_text = raw_text[:BODY_CHAR_LIMIT]
@@ -59,7 +75,7 @@ def embed_articles():
                 "title": title,
                 "url": doc.get("url"),
 
-                # ---- Time (v1 contract) ----
+                # ---- Time (v1) ----
                 "published_at_raw": doc.get("published_at_raw"),
                 "published_at_utc": doc.get("published_at_utc"),
                 "ingested_at": doc.get("ingested_at"),
@@ -88,16 +104,19 @@ def embed_articles():
             processed += 1
 
             if len(bulk_ops) >= BULK_SIZE:
-                emb_col.bulk_write(bulk_ops)
+                emb_col.bulk_write(bulk_ops, ordered=False)
                 bulk_ops = []
 
         except Exception as e:
-            print(f"⚠️ Failed embedding for raw_article_id={doc.get('_id')}: {e}")
+            skipped += 1
+            print(f"⚠️ Failed embedding raw_article_id={doc.get('_id')}: {e}")
 
     if bulk_ops:
-        emb_col.bulk_write(bulk_ops)
+        emb_col.bulk_write(bulk_ops, ordered=False)
 
-    print(f"✅ Embedded {processed} articles into articles_embedded (v1)")
+    print("✅ Embedding complete")
+    print(f"   New articles embedded : {processed}")
+    print(f"   Articles skipped      : {skipped}")
 
 
 if __name__ == "__main__":
