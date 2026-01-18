@@ -16,12 +16,11 @@ BULK_SIZE = 16
 
 def embed_articles():
     """
-    IDENTITY-SAFE PIPELINE (v1):
+    v1 EMBEDDING PIPELINE (IDEMPOTENT)
 
     - Reads from articles_raw
-    - Embeds ONLY raw articles that are not yet embedded
+    - Embeds ONLY new raw articles
     - Writes exactly one embedded doc per raw article
-    - Safe to run daily / repeatedly
     """
 
     raw_col = get_raw_articles_collection()
@@ -29,15 +28,12 @@ def embed_articles():
 
     model = SentenceTransformer(MODEL_NAME)
 
-    # 🔑 Find already embedded raw_article_ids
-    embedded_ids = set(
+    # 🔒 Already embedded raw IDs
+    embedded_ids = {
         doc["raw_article_id"]
         for doc in emb_col.find({}, {"raw_article_id": 1})
-    )
+    }
 
-    print(f"🔎 Found {len(embedded_ids)} already embedded articles")
-
-    # Only embed NEW raw articles
     cursor = raw_col.find(
         {"_id": {"$nin": list(embedded_ids)}}
     )
@@ -46,6 +42,7 @@ def embed_articles():
     processed = 0
     skipped = 0
 
+    print(f"🔎 Found {len(embedded_ids)} already embedded articles")
     print("🚀 Starting embedding pipeline (idempotent)")
 
     for doc in cursor:
@@ -58,9 +55,6 @@ def embed_articles():
                 continue
 
             body_text = raw_text[:BODY_CHAR_LIMIT]
-
-            title_emb = model.encode(title).tolist()
-            body_emb = model.encode(body_text).tolist()
 
             embedded_doc = {
                 # ---- Lineage ----
@@ -75,7 +69,7 @@ def embed_articles():
                 "title": title,
                 "url": doc.get("url"),
 
-                # ---- Time (v1) ----
+                # ---- Time ----
                 "published_at_raw": doc.get("published_at_raw"),
                 "published_at_utc": doc.get("published_at_utc"),
                 "ingested_at": doc.get("ingested_at"),
@@ -86,13 +80,13 @@ def embed_articles():
 
                 # ---- Embeddings ----
                 "embeddings": {
-                    "title": title_emb,
-                    "body": body_emb,
+                    "title": model.encode(title).tolist(),
+                    "body": model.encode(body_text).tolist(),
                     "model": MODEL_NAME,
                     "embedded_at": datetime.now(timezone.utc),
                 },
 
-                # ---- Processing flags ----
+                # ---- Processing ----
                 "processing": {
                     "embedded": True,
                     "semantically_deduped": False,
@@ -115,8 +109,8 @@ def embed_articles():
         emb_col.bulk_write(bulk_ops, ordered=False)
 
     print("✅ Embedding complete")
-    print(f"   New articles embedded : {processed}")
-    print(f"   Articles skipped      : {skipped}")
+    print(f"   New embedded : {processed}")
+    print(f"   Skipped      : {skipped}")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-from pathlib import Path
 
-from processing.common.mongo_client import get_embedded_articles_collection
+from pymongo import InsertOne, UpdateOne
+
+from processing.common.mongo_client import (
+    get_embedded_articles_collection,
+    get_semantic_dedup_groups_collection,
+)
 from processing.semantic_dedup.cosine_similarity import cosine_similarity
 from processing.semantic_dedup.constants import (
     TITLE_COSINE_THRESHOLD,
@@ -11,76 +15,44 @@ from processing.semantic_dedup.constants import (
 )
 
 # ---------------- CONFIG ----------------
-DRY_RUN = True                  # ⛔ KEEP TRUE
-ENABLE_TIME_WINDOW = True
+DRY_RUN = False          # 🔴 SET TRUE TO TEST
+DEDUP_VERSION = "v1"
 
 HARD_DUP_TITLE_THRESHOLD = 0.99
 HARD_DUP_BODY_THRESHOLD = 0.99
-
-LOG_SIMILARITY_THRESHOLD = 0.70
-
-LOG_DIR = Path("processing/semantic_dedup/logs")
 # --------------------------------------
 
 
 def run_semantic_dedup():
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    run_ts = datetime.now(timezone.utc)
-    log_path = LOG_DIR / f"dedup_run_{run_ts.date().isoformat()}.txt"
-
-    def log(msg: str = ""):
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-
-    col = get_embedded_articles_collection()
+    emb_col = get_embedded_articles_collection()
+    group_col = get_semantic_dedup_groups_collection()
 
     query = {
-        "$or": [
-            {"processing.semantically_deduped": False},
-            {"processing.semantically_deduped": {"$exists": False}},
-        ]
+        "processing.semantically_deduped": {"$ne": True}
     }
 
-    articles = list(col.find(query))
+    articles = list(emb_col.find(query))
 
-    stats = {
-        "articles_scanned": len(articles),
-        "hard_duplicates": 0,
-        "semantic_duplicates": 0,
-        "groups": 0,
-    }
+    print(f"🔹 Loaded {len(articles)} candidate articles")
 
-    log("DEDUP RUN")
-    log("════════════════════════════════════════")
-    log(f"Run timestamp (UTC) : {run_ts.isoformat()}")
-    log(f"Articles scanned   : {stats['articles_scanned']}")
-    log("")
-
-    if not articles:
-        log("No articles found. Exiting.")
-        return
-
-    # Safe sort by publish time
     articles.sort(
         key=lambda x: x.get("published_at_utc")
         or datetime.min.replace(tzinfo=timezone.utc)
     )
 
     processed_ids = set()
+    group_inserts = []
+    article_updates = []
 
     for i, base in enumerate(articles):
         if base["_id"] in processed_ids:
             continue
 
         base_time = base.get("published_at_utc")
-        if base_time is None:
+        if not base_time:
             continue
 
-        group_id = str(uuid4())
-        group_members = [base]
-        processed_ids.add(base["_id"])
-
+        members = [base]
         hard_dups = []
         semantic_dups = []
 
@@ -91,13 +63,12 @@ def run_semantic_dedup():
             if candidate.get("entity_id") != base.get("entity_id"):
                 continue
 
-            candidate_time = candidate.get("published_at_utc")
-            if candidate_time is None:
+            cand_time = candidate.get("published_at_utc")
+            if not cand_time:
                 continue
 
-            if ENABLE_TIME_WINDOW:
-                if abs(candidate_time - base_time) > timedelta(hours=TIME_WINDOW_HOURS):
-                    continue
+            if abs(cand_time - base_time) > timedelta(hours=TIME_WINDOW_HOURS):
+                continue
 
             title_sim = cosine_similarity(
                 base["embeddings"]["title"],
@@ -108,69 +79,80 @@ def run_semantic_dedup():
                 candidate["embeddings"]["body"],
             )
 
-            # ---- HARD DUPLICATE ----
-            if (
-                title_sim >= HARD_DUP_TITLE_THRESHOLD
-                and body_sim >= HARD_DUP_BODY_THRESHOLD
-            ):
-                hard_dups.append((candidate, title_sim, body_sim))
-                group_members.append(candidate)
+            if title_sim >= HARD_DUP_TITLE_THRESHOLD and body_sim >= HARD_DUP_BODY_THRESHOLD:
+                members.append(candidate)
+                hard_dups.append(candidate["_id"])
                 processed_ids.add(candidate["_id"])
-                stats["hard_duplicates"] += 1
                 continue
 
-            # ---- SEMANTIC DUPLICATE ----
-            if (
-                title_sim >= TITLE_COSINE_THRESHOLD
-                and body_sim >= BODY_COSINE_THRESHOLD
-            ):
-                semantic_dups.append((candidate, title_sim, body_sim))
-                group_members.append(candidate)
+            if title_sim >= TITLE_COSINE_THRESHOLD and body_sim >= BODY_COSINE_THRESHOLD:
+                members.append(candidate)
+                semantic_dups.append(candidate["_id"])
                 processed_ids.add(candidate["_id"])
-                stats["semantic_duplicates"] += 1
 
-        if len(group_members) > 1:
-            canonical = max(group_members, key=lambda x: x.get("text_length", 0))
+        if len(members) <= 1:
+            continue
 
-            stats["groups"] += 1
+        group_id = str(uuid4())
+        canonical = max(members, key=lambda x: x.get("text_length", 0))
 
-            log("────────────────────────────────────────")
-            log(f"🧠 SEMANTIC GROUP #{stats['groups']}")
-            log(f"Entity     : {base.get('company_name')} ({base.get('ticker')})")
-            log(f"Group ID   : {group_id}")
-            log(f"Group size : {len(group_members)}")
-            log(f"Canonical  : {canonical.get('title', '')}")
-            log(f"Published  : {base_time.isoformat()}")
-            log("")
+        group_doc = {
+            "group_id": group_id,
+            "dedup_version": DEDUP_VERSION,
 
-            for doc, t_sim, b_sim in hard_dups:
-                log("  🧱 HARD DUPLICATE")
-                log(f"    Title     : {doc.get('title', '')}")
-                log(f"    Title cos : {t_sim:.3f}")
-                log(f"    Body cos  : {b_sim:.3f}")
-                log("")
+            "entity_id": base.get("entity_id"),
+            "company_name": base.get("company_name"),
+            "ticker": base.get("ticker"),
 
-            for doc, t_sim, b_sim in semantic_dups:
-                log("  🔗 SEMANTIC DUPLICATE")
-                log(f"    Title     : {doc.get('title', '')}")
-                log(f"    Title cos : {t_sim:.3f}")
-                log(f"    Body cos  : {b_sim:.3f}")
-                log("")
+            "canonical_article_id": canonical["_id"],
+            "member_article_ids": [m["_id"] for m in members],
 
-    unique_articles = stats["articles_scanned"] - stats["hard_duplicates"]
+            "hard_duplicate_ids": hard_dups,
+            "semantic_duplicate_ids": semantic_dups,
 
-    log("")
-    log("DEDUP RUN SUMMARY")
-    log("────────────────────────────────────────")
-    log(f"Articles scanned        : {stats['articles_scanned']}")
-    log(f"Unique articles         : {unique_articles}")
-    log(f"Hard duplicates merged  : {stats['hard_duplicates']}")
-    log(f"Semantic groups formed  : {stats['groups']}")
-    log(f"Singleton groups        : {unique_articles - stats['groups']}")
-    log(f"Mongo writes            : 0 (dry run)")
-    log("")
+            "group_size": len(members),
+            "created_at": datetime.now(timezone.utc),
 
-    print(f"✅ Dedup run complete. Log written to:\n{log_path}")
+            "dedup_params": {
+                "title_threshold": TITLE_COSINE_THRESHOLD,
+                "body_threshold": BODY_COSINE_THRESHOLD,
+                "hard_dup_title": HARD_DUP_TITLE_THRESHOLD,
+                "hard_dup_body": HARD_DUP_BODY_THRESHOLD,
+                "time_window_hours": TIME_WINDOW_HOURS,
+            },
+        }
+
+        group_inserts.append(InsertOne(group_doc))
+
+        for m in members:
+            article_updates.append(
+                UpdateOne(
+                    {"_id": m["_id"]},
+                    {
+                        "$set": {
+                            "processing.semantically_deduped": True,
+                            "processing.dedup_group_id": group_id,
+                            "processing.is_canonical": m["_id"] == canonical["_id"],
+                        }
+                    },
+                )
+            )
+
+        processed_ids.update(m["_id"] for m in members)
+
+    print(f"🧠 Dedup groups to write : {len(group_inserts)}")
+
+    if DRY_RUN:
+        print("⛔ DRY RUN — no Mongo writes performed")
+        return
+
+    if group_inserts:
+        group_col.bulk_write(group_inserts, ordered=False)
+
+    if article_updates:
+        emb_col.bulk_write(article_updates, ordered=False)
+
+    print("✅ Semantic dedup persisted to MongoDB")
 
 
 if __name__ == "__main__":
