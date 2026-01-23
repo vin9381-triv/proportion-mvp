@@ -1,15 +1,14 @@
-def get_clustering_candidates_query():
-    """
-    Include:
-    - Singletons (not semantically deduped)
-    - Canonical articles from dedup groups
-
-    Exclude:
-    - Non-canonical duplicates
-    """
+def get_clustering_candidates_query(raw_article_ids):
     return {
-        "$or": [
-            {"processing.semantically_deduped": {"$ne": True}},
-            {"processing.is_canonical": True}
+        "$and": [
+            {
+                "$or": [
+                    {"processing.semantically_deduped": {"$ne": True}},
+                    {"processing.is_canonical": True}
+                ]
+            },
+            {
+                "raw_article_id": {"$in": raw_article_ids}
+            }
         ]
     }

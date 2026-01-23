@@ -1,46 +1,97 @@
-from processing.common.mongo_client import get_collection
-from .queries import get_clustering_candidates_query
-from .feature_builder import build_feature_matrix
-from .kmeans_stage import run_kmeans
-from .density_stage import run_dbscan
-from .summarizer import summarize_clusters_to_file
-
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
+import yaml
+
+from processing.common.mongo_client import get_collection
+from processing.clustering.input_resolver import (
+    get_raw_article_ids_for_window_and_tickers
+)
+from processing.clustering.queries import get_clustering_candidates_query
+from processing.clustering.feature_builder import build_feature_matrix
+from processing.clustering.density_stage import run_dbscan
+from processing.clustering.summarizer import summarize_clusters_to_file
+
+
+# ---------- CONFIG ----------
+WINDOW_DAYS = 3
+TICKER_CONFIG_PATH = "config/ticker.yaml"
+OUTPUT_DIR = "processing/clustering/outputs"
+MIN_ARTICLES_PER_TICKER = 5
+
+
+def load_companies(ticker_config_path):
+    with open(ticker_config_path, "r") as f:
+        config = yaml.safe_load(f)
+    return config.get("companies", [])
+
 
 def run():
-    articles_col = get_collection("articles_embedded")
+    # ---- time window ----
+    end_utc = datetime.utcnow()
+    start_utc = end_utc - timedelta(days=WINDOW_DAYS)
 
-    articles = list(
-        articles_col.find(get_clustering_candidates_query())
-    )
+    print(f"Clustering window: {start_utc.date()} → {end_utc.date()}")
 
-    print(f"Clustering candidates: {len(articles)}")
+    companies = load_companies(TICKER_CONFIG_PATH)
 
-    X, _ = build_feature_matrix(articles)
+    embedded_col = get_collection("articles_embedded")
 
-    k = int(len(articles) ** 0.5)
-    print(f"KMeans k={k}")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    run_kmeans(X, k=k)
+    for company in companies:
+        ticker = company["ticker"]
+        name = company["name"]
 
-    final_labels = run_dbscan(X)
+        print(f"\n--- Processing ticker: {ticker} ({name}) ---")
 
-    output_dir = "processing/clustering/outputs"
-    os.makedirs(output_dir, exist_ok=True)
+        # ---- resolve raw article IDs for THIS ticker ----
+        raw_article_ids = get_raw_article_ids_for_window_and_tickers(
+            start_utc=start_utc,
+            end_utc=end_utc,
+            tickers=[ticker]
+        )
 
-    run_date = datetime.utcnow().strftime("%Y-%m-%d")
-    output_filename = f"clustering_run_{run_date}.txt"
+        print(f"Raw articles found: {len(raw_article_ids)}")
 
-    output_path = os.path.join(output_dir, output_filename)
+        if len(raw_article_ids) < MIN_ARTICLES_PER_TICKER:
+            print("Not enough raw articles, skipping.")
+            continue
 
-    summarize_clusters_to_file(
-        final_labels,
-        articles,
-        output_path
-    )
+        # ---- fetch embedded articles (dedup-safe) ----
+        articles = list(
+            embedded_col.find(
+                get_clustering_candidates_query(raw_article_ids)
+            )
+        )
 
-    print(f"Cluster summary written to: {output_path}")
+        print(f"Embedded articles after dedup: {len(articles)}")
+
+        if len(articles) < MIN_ARTICLES_PER_TICKER:
+            print("Not enough embedded articles, skipping.")
+            continue
+
+        # ---- build features ----
+        X, _ = build_feature_matrix(articles)
+
+        # ---- clustering ----
+        labels = run_dbscan(X)
+
+        # ---- output ----
+        filename = (
+            f"clustering_run_{ticker}_"
+            f"{start_utc.date()}_to_{end_utc.date()}.txt"
+        )
+
+        output_path = os.path.join(OUTPUT_DIR, filename)
+
+        summarize_clusters_to_file(
+            labels=labels,
+            articles=articles,
+            output_path=output_path
+        )
+
+        print(f"Written: {output_path}")
+
 
 if __name__ == "__main__":
     run()
