@@ -4,7 +4,6 @@ import requests
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-# This is where the GNEWS_API_KEY is stored (not hardcoded)
 load_dotenv()
 
 # GNews API credentials and endpoint
@@ -15,26 +14,29 @@ BASE_URL = "https://gnews.io/api/v4/search"
 def fetch_google_news_articles(
     query: str,
     entity_id: str,
-    company_name: str,
-    ticker: str,
+    entity_name: str,
+    ticker: str | None,
+    entity_type: str,
     max_articles: int = 10,
     language: str = "en",
-    sleep_after: int = 1
+    sleep_after: int = 1,
 ):
     """
-    Fetch recent news articles for a given company from the GNews API.
+    Fetch recent news articles for a given entity from the GNews API.
 
     Design principles:
+    - Entity-agnostic (company, industry, commodity, etc.)
     - Uses a licensed, stable news API (no scraping)
-    - Safe by default: API errors are caught and never crash the pipeline
+    - Safe by default: API errors never crash the pipeline
     - Idempotent at caller level (duplicates handled downstream)
-    - Request count is explicitly tracked for quota awareness
+    - Request count explicitly tracked for quota awareness
 
     Args:
-        query (str): Search query (currently unused in favor of company_name)
+        query (str): Search query string (used directly for GNews search)
         entity_id (str): Internal entity identifier
-        company_name (str): Company name used as GNews query
-        ticker (str): Stock ticker (metadata only)
+        entity_name (str): Human-readable entity name (metadata)
+        ticker (str | None): Stock ticker (companies only)
+        entity_type (str): company | industry | commodity
         max_articles (int): Upper bound on articles requested (API caps at 10)
         language (str): Language filter for articles
         sleep_after (int): Seconds to sleep after API call
@@ -45,49 +47,42 @@ def fetch_google_news_articles(
             - request_count (int): Number of API requests used (always 1 here)
     """
 
-    # GNews API query parameters
-    # NOTE:
-    # We intentionally query using company_name only.
-    # Exchange-specific tickers (e.g. ".NS") can cause API errors.
+    # ---- GNews API query parameters ----
     params = {
-        "q": company_name,          # 🔒 SAFE QUERY STRING
-        "token": GNEWS_API_KEY,     # API authentication
+        "q": query,                       # 🔑 USE QUERY TERMS (critical for jewellery)
+        "token": GNEWS_API_KEY,
         "lang": language,
-        "max": min(max_articles, 10)  # Free tier hard limit
+        "max": min(max_articles, 10),     # Free tier hard limit
     }
 
     try:
-        # Perform API request
         response = requests.get(BASE_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
     except requests.exceptions.RequestException as e:
-        # API-level failure is non-fatal:
-        # - Log the error
-        # - Return empty result
-        # - Still count the request for quota tracking
-        print(f"⚠️ GNews API failed for {company_name}: {e}")
+        print(f"⚠️ GNews API failed for '{query}' ({entity_name}): {e}")
         return [], 1
 
     articles = []
 
-    # Normalize GNews response into internal article schema
+    # ---- Normalize GNews response ----
     for a in data.get("articles", []):
         articles.append({
-            # Entity metadata
+            # ---- Entity metadata ----
             "entity_id": entity_id,
-            "company_name": company_name,
+            "entity_name": entity_name,
+            "entity_type": entity_type,
             "ticker": ticker,
 
-            # Source metadata
+            # ---- Source metadata ----
             "source": "gnews_api",
             "source_type": "api",
+            "publisher": a.get("source", {}).get("name"),
 
-            # Article metadata
+            # ---- Article metadata ----
             "title": a.get("title"),
             "url": a.get("url"),
-            "publisher": a.get("source", {}).get("name"),
             "published_at": a.get("publishedAt"),
             "description": a.get("description"),
             "content": a.get("content"),
@@ -96,5 +91,5 @@ def fetch_google_news_articles(
     # Light throttling to avoid burst API usage
     time.sleep(sleep_after)
 
-    # Always return request_count = 1 (one API call per company)
+    # Always return request_count = 1 (one API call per query)
     return articles, 1
