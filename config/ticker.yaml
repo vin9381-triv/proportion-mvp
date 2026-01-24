@@ -8,6 +8,7 @@ companies:
     market: US
     exchange: NASDAQ
     sector: Technology
+    entity_type: company
 
   - entity_id: company_us_tech_002
     name: Microsoft
@@ -15,6 +16,7 @@ companies:
     market: US
     exchange: NASDAQ
     sector: Technology
+    entity_type: company
 
   - entity_id: company_us_tech_003
     name: Google
@@ -22,6 +24,7 @@ companies:
     market: US
     exchange: NASDAQ
     sector: Technology
+    entity_type: company
 
   - entity_id: company_us_tech_004
     name: Amazon
@@ -29,6 +32,7 @@ companies:
     market: US
     exchange: NASDAQ
     sector: E-commerce
+    entity_type: company
 
   - entity_id: company_us_tech_005
     name: Meta
@@ -36,6 +40,7 @@ companies:
     market: US
     exchange: NASDAQ
     sector: Social Media
+    entity_type: company
 
   - entity_id: company_us_auto_001
     name: Tesla
@@ -43,6 +48,7 @@ companies:
     market: US
     exchange: NASDAQ
     sector: Automotive
+    entity_type: company
 
   - entity_id: company_us_chip_001
     name: NVIDIA
@@ -50,6 +56,7 @@ companies:
     market: US
     exchange: NASDAQ
     sector: Semiconductors
+    entity_type: company
 
   - entity_id: company_us_bank_001
     name: JPMorgan Chase
@@ -57,3 +64,30 @@ companies:
     market: US
     exchange: NYSE
     sector: Banking
+    entity_type: company
+
+
+industries:
+  - entity_id: industry_jewellery_gold_001
+    name: Gold Jewellery Industry
+    market: Global
+    sector: Jewellery
+    entity_type: industry
+    query_terms:
+      - gold jewellery industry
+      - gold jewelry demand
+      - gold jewellery market
+      - gold jewellery exports
+      - gold jewellery consumption
+
+  - entity_id: industry_jewellery_silver_002
+    name: Silver Jewellery Industry
+    market: Global
+    sector: Jewellery
+    entity_type: industry
+    query_terms:
+      - silver jewellery industry
+      - silver jewelry demand
+      - silver jewellery market
+      - silver jewellery exports
+      - silver jewellery consumption

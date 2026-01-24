@@ -2,35 +2,47 @@ import time
 from datetime import datetime, timezone
 from pymongo.errors import DuplicateKeyError
 
-from ingestion.news_sources.ticker_loader import load_companies
+from ingestion.news_sources.ticker_loader import load_entities
 from ingestion.news_sources.gnews_fetcher import fetch_google_news_articles
 from ingestion.news_sources.article_processor import process_article
 from ingestion.news_sources.mongo_client import get_articles_collection
 from ingestion.news_sources.content_hash import compute_content_hash
-
 from ingestion.utils.time_normalizer import normalize_published_at
 
 
 # ---------------- CONFIG ----------------
-MAX_ARTICLES_PER_COMPANY = 25
+MAX_ARTICLES_PER_ENTITY = 25
 MIN_TEXT_LENGTH = 500
-SLEEP_BETWEEN_COMPANIES = 3
-
-# 🔬 TEST MODE
-TEST_MODE = False          # ⛔ set False after validation
-TEST_MAX_COMPANIES = 1
-TEST_MAX_ARTICLES = 1
+SLEEP_BETWEEN_ENTITIES = 3
 # --------------------------------------
 
 
-def ingest():
-    companies = load_companies()
+def ingest() -> None:
+    """
+    Run the news ingestion pipeline.
 
-    if TEST_MODE:
-        companies = companies[:TEST_MAX_COMPANIES]
-        print("🧪 TEST MODE ENABLED")
-        print(f"   Companies limited to {TEST_MAX_COMPANIES}")
-        print(f"   Articles per company limited to {TEST_MAX_ARTICLES}")
+    Responsibilities:
+    - Load configured entities (companies, industries, etc.)
+    - Fetch recent news articles per entity/query
+    - Normalize and enrich article metadata
+    - Persist clean, deduplicable documents to MongoDB
+
+    Design principles:
+    - Entity-agnostic (no company-specific logic)
+    - No interpretation or tagging at ingestion time
+    - Safe retries and non-fatal error handling
+    - Deterministic, restart-safe behavior
+
+    This function is intended to be:
+    - Scheduled (cron / job runner)
+    - Idempotent at the article level (via downstream deduplication)
+    """
+
+    # ---- Load entities from config ----
+    entities = load_entities()
+    if not entities:
+        print("⚠️ No entities loaded. Exiting ingestion.")
+        return
 
     collection = get_articles_collection()
 
@@ -42,96 +54,103 @@ def ingest():
     run_start = datetime.now(timezone.utc)
     print(f"\n🚀 Ingestion started at {run_start.isoformat()}")
 
-    for company in companies:
-        print(f"\n🔹 Company: {company['company_name']} ({company['ticker']})")
+    # ---- Main ingestion loop ----
+    for entity in entities:
+        print(f"\n🔹 Entity: {entity['entity_name']} ({entity['entity_type']})")
 
-        try:
-            articles, req_count = fetch_google_news_articles(
-                query=company["company_name"],
-                entity_id=company["entity_id"],
-                company_name=company["company_name"],
-                ticker=company["ticker"],
-                max_articles=TEST_MAX_ARTICLES if TEST_MODE else MAX_ARTICLES_PER_COMPANY,
-            )
-        except Exception as e:
-            print(f"❌ Skipping company {company['company_name']} due to error: {e}")
-            continue
-
-        total_requests += req_count
-        total_fetched += len(articles)
-
-        print(f"📥 Fetched {len(articles)} articles")
-
-        for article in articles:
+        for query in entity["query_terms"]:
             try:
-                processed = process_article(article["url"])
-                if not processed or len(processed["raw_text"]) < MIN_TEXT_LENGTH:
-                    total_skipped += 1
-                    continue
-
-                content_hash = compute_content_hash(processed["raw_text"])
-                ingested_at = datetime.now(timezone.utc)
-
-                published_at_utc = normalize_published_at(
-                    article.get("published_at"),
-                    ingested_at,
+                articles, request_count = fetch_google_news_articles(
+                    query=query,
+                    entity_id=entity["entity_id"],
+                    entity_name=entity["entity_name"],
+                    ticker=entity.get("ticker"),
+                    entity_type=entity["entity_type"],
+                    max_articles=MAX_ARTICLES_PER_ENTITY,
                 )
-
-                doc = {
-                    # ---- Entity ----
-                    "entity_id": article["entity_id"],
-                    "company_name": article["company_name"],
-                    "ticker": article["ticker"],
-
-                    # ---- Source ----
-                    "source": article["source"],
-                    "source_type": article["source_type"],
-                    "publisher": article["publisher"],
-
-                    # ---- Article ----
-                    "title": article["title"],
-                    "url": article["url"],
-
-                    # ---- Time (IMPORTANT) ----
-                    "published_at_raw": article.get("published_at"),
-                    "published_at_utc": published_at_utc,
-                    "ingested_at": ingested_at,
-
-                    # ---- Content ----
-                    "raw_text": processed["raw_text"],
-                    "summary": processed["summary"],
-                    "language": processed["language"],
-                    "text_length": len(processed["raw_text"]),
-                    "content_hash": content_hash,
-
-                    # ---- Processing Flags ----
-                    "processing": {
-                        "embedded": False,
-                        "clustered": False,
-                    },
-                }
-
-                collection.insert_one(doc)
-                total_inserted += 1
-
-                if TEST_MODE:
-                    print("\n🧪 TEST INSERT")
-                    print(f"   Title              : {doc['title'][:100]}")
-                    print(f"   published_at_raw   : {doc['published_at_raw']}")
-                    print(f"   published_at_utc   : {doc['published_at_utc']}")
-                    print(f"   ingested_at        : {doc['ingested_at']}")
-
-            except DuplicateKeyError:
-                total_skipped += 1
-
             except Exception as e:
-                total_skipped += 1
-                print(f"⚠️ Error processing article: {e}")
+                # Fetch-level failures are non-fatal
+                print(f"❌ Fetch failed for '{query}': {e}")
+                continue
 
-        time.sleep(SLEEP_BETWEEN_COMPANIES)
+            total_requests += request_count
+            total_fetched += len(articles)
+
+            print(f"📥 Fetched {len(articles)} articles for query: '{query}'")
+
+            # ---- Article processing loop ----
+            for article in articles:
+                try:
+                    processed = process_article(article["url"])
+                    if not processed:
+                        total_skipped += 1
+                        continue
+
+                    if len(processed["raw_text"]) < MIN_TEXT_LENGTH:
+                        total_skipped += 1
+                        continue
+
+                    content_hash = compute_content_hash(processed["raw_text"])
+                    ingested_at = datetime.now(timezone.utc)
+
+                    published_at_utc = normalize_published_at(
+                        article.get("published_at"),
+                        ingested_at,
+                    )
+
+                    doc = {
+                        # ---- Entity ----
+                        "entity_id": entity["entity_id"],
+                        "entity_name": entity["entity_name"],
+                        "entity_type": entity["entity_type"],
+                        "ticker": entity.get("ticker"),
+                        "sector": entity.get("sector"),
+
+                        # ---- Source ----
+                        "source": article["source"],
+                        "source_type": article["source_type"],
+                        "publisher": article["publisher"],
+
+                        # ---- Article ----
+                        "title": article["title"],
+                        "url": article["url"],
+
+                        # ---- Time ----
+                        "published_at_raw": article.get("published_at"),
+                        "published_at_utc": published_at_utc,
+                        "ingested_at": ingested_at,
+
+                        # ---- Content ----
+                        "raw_text": processed["raw_text"],
+                        "summary": processed["summary"],
+                        "language": processed["language"],
+                        "text_length": len(processed["raw_text"]),
+                        "content_hash": content_hash,
+
+                        # ---- Processing Flags ----
+                        "processing": {
+                            "embedded": False,
+                            "clustered": False,
+                        },
+                    }
+
+                    collection.insert_one(doc)
+                    total_inserted += 1
+
+                except DuplicateKeyError:
+                    # Expected during reruns / overlap
+                    total_skipped += 1
+
+                except Exception as e:
+                    total_skipped += 1
+                    print(f"⚠️ Error processing article: {e}")
+
+            # Gentle throttling between queries
+            time.sleep(SLEEP_BETWEEN_ENTITIES)
 
     run_end = datetime.now(timezone.utc)
 
+    # ---- Run summary ----
     print("\n✅ Ingestion finished")
     print("──────── SUMMARY ────────")
     print(f"Run time        : {run_start.isoformat()} → {run_end.isoformat()}")
