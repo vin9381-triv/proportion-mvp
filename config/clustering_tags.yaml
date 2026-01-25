@@ -1,0 +1,90 @@
+# config/clustering_tags.yaml
+# Domain / intent tags used BEFORE clustering
+# Purpose: reduce noise and prevent fake story clusters
+
+tags:
+  price_volatility:
+    description: Price movement, volatility, market commentary
+    keywords:
+      - price
+      - prices
+      - surge
+      - plunge
+      - record
+      - volatility
+      - rally
+      - fall
+      - hit
+      - outpaces
+      - cagr
+      - nears
+      - peak
+
+  policy_budget_duty:
+    description: Government policy, budget, duty, GST, tariffs
+    keywords:
+      - budget
+      - duty
+      - gst
+      - tariff
+      - tax
+      - bond
+      - policy
+      - rationalisation
+      - relief
+      - duties
+
+  exports_trade:
+    description: Exports, trade flows, shipments
+    keywords:
+      - export
+      - exports
+      - shipment
+      - shipments
+      - trade
+      - gcepc
+      - tariffs hit
+
+  company_performance:
+    description: Company results, growth, acquisitions
+    keywords:
+      - targets
+      - growth
+      - shares
+      - stock
+      - stocks
+      - acquisition
+      - expands
+      - eyes
+      - surge
+
+  consumer_demand:
+    description: Consumer behaviour, retail demand
+    keywords:
+      - demand
+      - consumers
+      - retail
+      - wedding
+      - festival
+      - buying
+      - opt for
+      - footfall
+
+  innovation_materials:
+    description: New materials, technology, innovation
+    keywords:
+      - lab-grown
+      - lab grown
+      - diamond
+      - innovation
+      - material
+      - technology
+
+  crime_noise:
+    description: Crime, theft, non-market noise
+    keywords:
+      - stolen
+      - theft
+      - robbed
+      - loot
+      - crime
