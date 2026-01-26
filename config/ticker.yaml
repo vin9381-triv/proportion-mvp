@@ -1,5 +1,9 @@
-# Master entity configuration for ingestion
-# Used by: news ingestion, impact signals, clustering, HIR calculation
+# REFINED Phase 1 Configuration Based on Article Quality Analysis
+# Changes from previous version:
+# - Fixed seasonal queries (Diwali/CNY too early)
+# - Broadened TIPS queries (too technical)
+# - Kept all high-performing queries
+# - Removed old jewelry industry entities (noise)
 
 companies:
   - entity_id: company_us_tech_001
@@ -67,27 +71,128 @@ companies:
     entity_type: company
 
 
-industries:
-  - entity_id: industry_jewellery_gold_001
-    name: Gold Jewellery Industry
+# ============================================================
+# CRITICAL PRIORITY - Monetary Policy Forces
+# ============================================================
+monetary_policy:
+  - entity_id: monetary_policy_fed_001
+    name: Federal Reserve & Interest Rates
     market: Global
-    sector: Jewellery
-    entity_type: industry
+    sector: Monetary Policy
+    entity_type: monetary_policy
+    priority: critical
+    description: "Fed rate decisions, FOMC meetings, and Powell statements"
     query_terms:
-      - gold jewellery industry
-      - gold jewelry demand
-      - gold jewellery market
-      - gold jewellery exports
-      - gold jewellery consumption
+      - Federal Reserve interest rates
+      - Fed rate decision gold
+      - FOMC meeting precious metals
+      - Jerome Powell gold
+      - Fed monetary policy silver
 
-  - entity_id: industry_jewellery_silver_002
-    name: Silver Jewellery Industry
+  - entity_id: monetary_policy_cbgold_002
+    name: Central Bank Gold Purchases
     market: Global
-    sector: Jewellery
-    entity_type: industry
+    sector: Monetary Policy
+    entity_type: monetary_policy
+    priority: critical
+    description: "Direct demand from central bank reserves"
     query_terms:
-      - silver jewellery industry
-      - silver jewelry demand
-      - silver jewellery market
-      - silver jewellery exports
-      - silver jewellery consumption
+      - central bank gold purchases
+      - PBOC gold reserves
+      - central bank gold demand
+      - official sector gold buying
+
+  - entity_id: monetary_policy_ecb_003
+    name: European Central Bank Policy
+    market: Europe
+    sector: Monetary Policy
+    entity_type: monetary_policy
+    priority: high
+    description: "ECB policy affects euro-dollar dynamics"
+    query_terms:
+      - ECB interest rates gold
+      - European Central Bank precious metals
+      - ECB monetary policy silver
+
+
+# ============================================================
+# CRITICAL PRIORITY - US Dollar & Currency
+# ============================================================
+macroeconomic_dollar:
+  - entity_id: macro_dollar_001
+    name: US Dollar Strength & DXY
+    market: Global
+    sector: Macroeconomic
+    entity_type: currency
+    priority: critical
+    description: "Dollar Index - strong inverse correlation with gold"
+    query_terms:
+      - US dollar strength gold
+      - dollar index DXY precious metals
+      - dollar gold correlation
+      - weak dollar gold rally
+      - currency markets gold silver
+
+
+# ============================================================
+# CRITICAL PRIORITY - Inflation & Real Interest Rates
+# ============================================================
+macroeconomic_inflation:
+  - entity_id: macro_inflation_001
+    name: Inflation Reports & CPI
+    market: US
+    sector: Macroeconomic
+    entity_type: inflation
+    priority: critical
+    description: "CPI, PCE, PPI reports - immediate market movers"
+    query_terms:
+      - inflation gold hedge
+      - CPI report gold price
+      - PCE inflation precious metals
+      - consumer inflation gold
+      - inflation expectations silver
+
+  - entity_id: macro_realrates_002
+    name: Real Interest Rates
+    market: US
+    sector: Macroeconomic
+    entity_type: inflation
+    priority: critical
+    description: "Real rates - critical gold price determinant"
+    query_terms:
+      - real interest rates gold
+      - inflation adjusted returns gold  # CHANGED: Broadened from "TIPS yields"
+      - negative real rates gold
+      - treasury yields gold correlation
+
+
+# ============================================================
+# HIGH PRIORITY - Physical Demand (India/China)
+# ============================================================
+industries:
+  - entity_id: demand_india_gold_001
+    name: India Gold Demand & Imports
+    market: India
+    sector: Physical Demand
+    entity_type: physical_demand
+    priority: high
+    description: "World's largest gold jewelry consumer"
+    query_terms:
+      - India gold demand
+      - India gold imports           # CHANGED: More specific than "imports prices"
+      - India gold jewelry market    # CHANGED: Year-round query
+      - India gold ETF              # NEW: Captures investment demand
+      - India wedding gold demand   # CHANGED: Generic wedding season, not seasonal
+
+  - entity_id: demand_china_gold_002
+    name: China Gold Demand & Consumption
+    market: China
+    sector: Physical Demand
+    entity_type: physical_demand
+    priority: high
+    description: "Major consumer and producer"
+    query_terms:
+      - China gold consumption
+      - China gold market
+      - Shanghai Gold Exchange
+      - China gold ETF            # NEW: Investment demand
