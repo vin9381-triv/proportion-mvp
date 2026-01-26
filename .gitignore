@@ -29,6 +29,7 @@ notebooks/
 ############################
 logs/
 outputs/
+processing/clustering/outputs_clusters/
 ############################
 # OS
 ############################
