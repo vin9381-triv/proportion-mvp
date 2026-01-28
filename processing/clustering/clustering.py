@@ -38,13 +38,13 @@ INDUSTRY_WINDOW_DAYS = 7
 
 # Minimum thresholds
 MIN_ARTICLES_PER_ENTITY = 5
-MIN_ARTICLES_PER_TAG_BUCKET = 3  # Need at least 3 for DBSCAN
+MIN_ARTICLES_PER_TAG_BUCKET = 2  # Need at least 3 for DBSCAN
 
 # Tags to exclude from clustering (noise)
 EXCLUDED_TAGS = {"crime_noise", "spam_clickbait", "other"}
 
 # DBSCAN parameters
-DBSCAN_EPS = 0.3
+DBSCAN_EPS = 0.5
 DBSCAN_MIN_SAMPLES = 2
 
 
