@@ -1,5 +1,5 @@
 ############################
-# Python bytecode
+# Python
 ############################
 __pycache__/
 *.pyc
@@ -19,8 +19,15 @@ notebooks/
 .ipynb_checkpoints/
 
 ############################
+# Non-ingestion code (branch hygiene)
+############################
 processing/
 clustering/
-ingestion/news_sources/articles_title.py
-ingestion/news_sources/ingestion_test.py
+semantic_dedup/
+
 ############################
+# Logs / outputs
+############################
+logs/
+outputs/
+outputs_test/
