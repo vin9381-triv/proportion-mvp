@@ -1,5 +1,5 @@
 ############################
-# Python bytecode
+# Python
 ############################
 __pycache__/
 *.pyc
@@ -12,11 +12,26 @@ __pycache__/
 proportion/
 
 ############################
-# Data & notebooks
+# Data & artifacts
 ############################
 data/
+data/raw/
+data/processed/
+
+############################
+# Notebooks
+############################
 notebooks/
 .ipynb_checkpoints/
 
 ############################
+# Logs or outputs
+############################
+logs/
+outputs/
+processing/clustering/outputs_clusters/
 processing/
+############################
+# OS
+############################
+.DS_Store
