@@ -29,7 +29,11 @@ notebooks/
 ############################
 logs/
 outputs/
-processing/clustering/outputs_clusters/
+processing/clustering/outputs
+processing/clustering/outputs_test
+processing/clustering/clustering_test.py
+processing/clustering/input_resolver_test.py
+processing/clustering/diagnostic_test.py
 ############################
 # OS
 ############################

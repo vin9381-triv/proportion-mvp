@@ -13,10 +13,12 @@ def get_raw_article_ids_for_entity(
     """
     Fetch raw article IDs for an entity within a time window.
     
+    UPDATED VERSION: Works with consistent entity_type schema.
+    
     Args:
         start_utc: Start of time window
         end_utc: End of time window
-        entity_type: Type of entity ("company" or any other type)
+        entity_type: Type of entity ("company", "monetary_policy", "currency", etc.)
         tickers: List of tickers (for companies only)
         entity_id: Entity ID (for all non-company entities)
     
@@ -25,6 +27,7 @@ def get_raw_article_ids_for_entity(
     """
     raw_col = get_collection("articles_raw")
 
+    # Base query with time window
     base_query = {
         "published_at_utc": {
             "$gte": start_utc,
@@ -34,17 +37,21 @@ def get_raw_article_ids_for_entity(
 
     if entity_type == "company":
         # Companies: query by ticker
+        # Also filter by entity_type for consistency (post-backfill)
         if not tickers:
             raise ValueError("tickers must be provided for entity_type='company'")
+        
         base_query["ticker"] = {"$in": tickers}
+        base_query["entity_type"] = "company"  # ← Added for consistency
 
     else:
-        # All other entities (industry, monetary_policy, currency, etc.):
-        # Query by entity_id
-        # IMPORTANT: articles_raw must be tagged with entity_id during ingestion
+        # All other entities (monetary_policy, currency, inflation, physical_demand, etc.):
+        # Query by entity_id AND entity_type
         if not entity_id:
             raise ValueError(f"entity_id must be provided for entity_type='{entity_type}'")
+        
         base_query["entity_id"] = entity_id
+        base_query["entity_type"] = entity_type  # ← Safety filter
 
     cursor = raw_col.find(base_query, {"_id": 1})
 
