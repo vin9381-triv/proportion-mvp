@@ -25,16 +25,27 @@ notebooks/
 .ipynb_checkpoints/
 
 ############################
-# Logs or outputs
+# Logs / outputs
 ############################
 logs/
 outputs/
-processing/clustering/outputs
-processing/clustering/outputs_test
+
+# clustering outputs
+processing/clustering/outputs/
+processing/clustering/outputs_test/
+
+############################
+# Local-only test scripts (do not track)
+############################
 processing/clustering/clustering_test.py
 processing/clustering/input_resolver_test.py
 processing/clustering/diagnostic_test.py
+
 ############################
 # OS
 ############################
 .DS_Store
+############################
+# Exclude ingestion on clustering branch
+############################
+ingestion/
