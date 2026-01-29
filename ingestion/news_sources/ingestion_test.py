@@ -1,15 +1,13 @@
 """
-Multi-source news ingestion pipeline.
+Multi-source news ingestion pipeline - TEST VERSION
 
-Supports multiple news APIs (GNews, NewsData.io) with configurable strategies
-for query distribution and deduplication.
+CHANGES FROM PRODUCTION:
+- Uses test database: proportion_db_test
+- Uses test collection: articles_raw_test
+- No impact on production data or downstream processes
 
-New features vs. original:
-- Load data source configuration from data_sources.yaml
-- Support multiple news APIs simultaneously
-- Round-robin, priority, or broadcast query strategies
-- Track quota usage per source
-- Cross-source deduplication via content hash
+This allows safe testing of NewsData.io integration without
+affecting existing clustering, processing, or analytics workflows.
 """
 
 import time
@@ -21,9 +19,23 @@ from ingestion.news_sources.ticker_loader import load_entities
 from ingestion.news_sources.gnews_fetcher import fetch_google_news_articles
 from ingestion.news_sources.newsdata_fetcher import fetch_newsdata_articles
 from ingestion.news_sources.article_processor import process_article
-from ingestion.news_sources.mongo_client import get_articles_collection
 from ingestion.news_sources.content_hash import compute_content_hash
 from ingestion.utils.time_normalizer import normalize_published_at
+
+# ====== TEST DATABASE CONFIG ======
+from pymongo import MongoClient
+
+MONGO_URI = "mongodb://localhost:27017/"
+DB_NAME = "proportion_db_test"  # ← SEPARATE TEST DATABASE
+COLLECTION_NAME = "articles_raw_test"  # ← TEST COLLECTION
+
+def get_test_collection():
+    """Get test collection (separate from production)"""
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    return collection
+# ==================================
 
 
 # ---------------- CONFIG ----------------
@@ -35,12 +47,7 @@ DATA_SOURCES_CONFIG = Path("config/data_sources.yaml")
 
 
 def load_data_sources_config():
-    """
-    Load data sources configuration from YAML file.
-    
-    Returns:
-        dict: Configuration with enabled sources and request strategy
-    """
+    """Load data sources configuration from YAML file."""
     try:
         with open(DATA_SOURCES_CONFIG, 'r') as f:
             config = yaml.safe_load(f)
@@ -56,32 +63,14 @@ def load_data_sources_config():
 
 
 def get_enabled_sources(config):
-    """
-    Get list of enabled data sources sorted by priority.
-    
-    Args:
-        config (dict): Data sources configuration
-        
-    Returns:
-        list[dict]: Enabled sources sorted by priority
-    """
+    """Get list of enabled data sources sorted by priority."""
     sources = [s for s in config.get("data_sources", []) if s.get("enabled")]
     sources.sort(key=lambda x: x.get("priority", 999))
     return sources
 
 
 def fetch_from_source(source_name, query, entity):
-    """
-    Fetch articles from specified news source.
-    
-    Args:
-        source_name (str): Name of source ('gnews' or 'newsdata')
-        query (str): Search query
-        entity (dict): Entity metadata
-        
-    Returns:
-        tuple: (articles, request_count)
-    """
+    """Fetch articles from specified news source."""
     if source_name == "gnews":
         return fetch_google_news_articles(
             query=query,
@@ -105,16 +94,24 @@ def fetch_from_source(source_name, query, entity):
         return [], 0
 
 
-def ingest() -> None:
+def ingest_test() -> None:
     """
-    Run the multi-source news ingestion pipeline.
+    Run multi-source ingestion in TEST database.
+    
+    SAFE TO RUN:
+    - Uses proportion_db_test database
+    - Uses articles_raw_test collection
+    - No impact on production data
+    - Existing clustering/processing scripts unaffected
+    """
 
-    Guarantees:
-    - Exactly ONE raw document per real-world article (cross-source deduplication)
-    - Idempotent across reruns
-    - Safe across overlapping queries and entities
-    - Tracks quota usage per source
-    """
+    print("=" * 80)
+    print("🧪 MULTI-SOURCE INGESTION - TEST MODE")
+    print("=" * 80)
+    print(f"⚠️  Database: {DB_NAME}")
+    print(f"⚠️  Collection: {COLLECTION_NAME}")
+    print(f"⚠️  This will NOT affect your production database!")
+    print("=" * 80)
 
     # Load configuration
     entities = load_entities()
@@ -134,7 +131,7 @@ def ingest() -> None:
     strategy = config.get("request_strategy", {}).get("mode", "round_robin")
     print(f"🔄 Request strategy: {strategy}")
 
-    collection = get_articles_collection()
+    collection = get_test_collection()  # ← TEST COLLECTION
 
     # Metrics tracking
     total_requests = 0
@@ -147,7 +144,7 @@ def ingest() -> None:
     current_source_idx = 0
 
     run_start = datetime.now(timezone.utc)
-    print(f"\n🚀 Ingestion started at {run_start.isoformat()}")
+    print(f"\n🚀 Test ingestion started at {run_start.isoformat()}")
 
     for entity in entities:
         print(f"\n📹 Entity: {entity['entity_name']} ({entity['entity_type']})")
@@ -156,20 +153,16 @@ def ingest() -> None:
             
             # ---------- SOURCE SELECTION ----------
             if strategy == "round_robin":
-                # Alternate between sources for each query
                 source = enabled_sources[current_source_idx]
                 current_source_idx = (current_source_idx + 1) % len(enabled_sources)
                 sources_to_query = [source]
                 
             elif strategy == "priority":
-                # Use highest priority source (first in sorted list)
                 sources_to_query = [enabled_sources[0]]
                 
             elif strategy == "all":
-                # Query all enabled sources
                 sources_to_query = enabled_sources
             else:
-                # Default to first source
                 sources_to_query = [enabled_sources[0]]
 
             # ---------- FETCH FROM SELECTED SOURCE(S) ----------
@@ -251,7 +244,7 @@ def ingest() -> None:
                     },
                 }
 
-                # 🔑 CRITICAL: UPSERT BY content_hash (cross-source deduplication)
+                # 🔑 UPSERT BY content_hash
                 result = collection.update_one(
                     {"content_hash": content_hash},
                     {"$setOnInsert": doc},
@@ -267,10 +260,11 @@ def ingest() -> None:
 
     run_end = datetime.now(timezone.utc)
 
-    print("\n✅ Ingestion finished")
-    print("─" * 80)
-    print("SUMMARY")
-    print("─" * 80)
+    print("\n" + "=" * 80)
+    print("🧪 TEST INGESTION FINISHED")
+    print("=" * 80)
+    print(f"Database        : {DB_NAME}")
+    print(f"Collection      : {COLLECTION_NAME}")
     print(f"Run time        : {run_start.isoformat()} → {run_end.isoformat()}")
     print(f"API requests    : {total_requests}")
     print(f"Articles fetched: {total_fetched}")
@@ -279,8 +273,11 @@ def ingest() -> None:
     print("\n📊 SOURCE USAGE:")
     for source_name, count in source_usage.items():
         print(f"  {source_name}: {count} requests")
-    print("─" * 80)
+    print("=" * 80)
+    print("\n✅ Test complete! Check MongoDB:")
+    print(f"   db.getSiblingDB('{DB_NAME}').{COLLECTION_NAME}.count()")
+    print("=" * 80)
 
 
 if __name__ == "__main__":
-    ingest()
+    ingest_test()
