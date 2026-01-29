@@ -25,12 +25,19 @@ notebooks/
 .ipynb_checkpoints/
 
 ############################
-# Logs or outputs
+# Logs / outputs
 ############################
 logs/
 outputs/
-processing/clustering/outputs_clusters/
+
+############################
+# Non-ingestion code (branch hygiene)
+############################
 processing/
+clustering/
+semantic_dedup/
+processing/clustering/outputs_clusters/
+
 ############################
 # OS
 ############################
