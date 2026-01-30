@@ -1,14 +1,14 @@
 """
-Unified Story Clustering Pipeline
-==================================
+Unified Story Clustering Pipeline with MongoDB Integration
+===========================================================
 
 Two-stage clustering approach:
 1. Tag-based pre-filtering (removes noise, groups by story type)
 2. DBSCAN clustering within each tag bucket (finds actual story clusters)
 
-Works for both:
-- Tech companies (ticker-based)
-- Macro/Industry entities (entity_id-based)
+Saves results to both:
+- Text files (for human review)
+- MongoDB (for stance detection and downstream processing)
 """
 
 from datetime import datetime, timedelta
@@ -22,6 +22,11 @@ from processing.common.mongo_client import get_collection
 from processing.clustering.input_resolver import get_raw_article_ids_for_entity
 from processing.clustering.queries import get_clustering_candidates_query
 from processing.clustering.density_stage import run_dbscan
+from processing.clustering.cluster_mongodb_writer import (
+    create_clustering_run,
+    write_entity_clusters_to_mongodb,
+    update_article_cluster_assignments
+)
 
 
 # ============================================================
@@ -38,7 +43,7 @@ INDUSTRY_WINDOW_DAYS = 7
 
 # Minimum thresholds
 MIN_ARTICLES_PER_ENTITY = 5
-MIN_ARTICLES_PER_TAG_BUCKET = 2  # Need at least 3 for DBSCAN
+MIN_ARTICLES_PER_TAG_BUCKET = 2
 
 # Tags to exclude from clustering (noise)
 EXCLUDED_TAGS = {"crime_noise", "spam_clickbait", "other"}
@@ -46,6 +51,10 @@ EXCLUDED_TAGS = {"crime_noise", "spam_clickbait", "other"}
 # DBSCAN parameters
 DBSCAN_EPS = 0.5
 DBSCAN_MIN_SAMPLES = 2
+
+# MongoDB configuration
+WRITE_TO_MONGODB = True  # Set to False to only generate text files
+UPDATE_ARTICLE_ASSIGNMENTS = True  # Update articles_embedded with cluster IDs
 
 
 # ============================================================
@@ -88,12 +97,11 @@ def load_entities(ticker_config_path):
             "entity_type": "company",
             "name": company["name"],
             "ticker": company["ticker"],
-            "entity_id": None,
+            "entity_id": company.get("entity_id"),  # May be None
             "window_days": COMPANY_WINDOW_DAYS
         })
     
     # Add all industry/macro entities
-    # These can be under various keys: monetary_policy, industries, etc.
     for key in config.keys():
         if key == "companies":
             continue
@@ -191,17 +199,16 @@ def cluster_tag_bucket(articles, tag_name):
     if len(articles) < MIN_ARTICLES_PER_TAG_BUCKET:
         return None
     
-    # Build feature matrix - NOTE: we need both embeddings AND original articles
+    # Build feature matrix
     vectors = []
     valid_articles = []
     
     for article in articles:
-        # Skip articles without embeddings
         if "embeddings" not in article or "body" not in article["embeddings"]:
             continue
         
         vectors.append(article["embeddings"]["body"])
-        valid_articles.append(article)  # Keep the FULL article object
+        valid_articles.append(article)
     
     if len(vectors) < MIN_ARTICLES_PER_TAG_BUCKET:
         return None
@@ -224,20 +231,12 @@ def cluster_tag_bucket(articles, tag_name):
 
 
 # ============================================================
-# OUTPUT WRITER
+# OUTPUT WRITER (Text Files)
 # ============================================================
 
 def write_clustering_results(entity_info, tag_results, output_path):
-    """
-    Write human-readable clustering results to file.
-    
-    Args:
-        entity_info: dict with entity metadata
-        tag_results: list of clustering results per tag
-        output_path: str, path to output file
-    """
+    """Write human-readable clustering results to file."""
     with open(output_path, "w", encoding="utf-8") as f:
-        # Header
         f.write("=" * 80 + "\n")
         f.write("PROPORTION — Story Clustering Results\n")
         f.write("=" * 80 + "\n")
@@ -287,7 +286,6 @@ def write_clustering_results(entity_info, tag_results, output_path):
             f.write(f"TAG: {tag.upper()}\n")
             f.write("=" * 80 + "\n\n")
             
-            # Sort clusters by size (largest first)
             sorted_clusters = sorted(
                 clusters.items(),
                 key=lambda x: len(x[1]),
@@ -324,15 +322,6 @@ def write_clustering_results(entity_info, tag_results, output_path):
 def run_clustering_pipeline():
     """
     Main clustering pipeline entry point.
-    
-    Process:
-    1. Load entities and tags
-    2. For each entity:
-       a. Fetch articles in time window
-       b. Tag all articles
-       c. For each tag bucket (excluding noise):
-          - Run DBSCAN clustering
-       d. Write results to file
     """
     print("=" * 80)
     print("Starting Unified Story Clustering Pipeline")
@@ -350,7 +339,30 @@ def run_clustering_pipeline():
     print(f"Loaded {len(entities)} entities")
     print(f"Loaded {len(tag_config)} tags")
     print(f"Excluding tags: {', '.join(EXCLUDED_TAGS)}")
+    print(f"MongoDB Write: {WRITE_TO_MONGODB}")
     print()
+    
+    # Create clustering run record
+    clustering_run_id = None
+    if WRITE_TO_MONGODB:
+        config = {
+            "company_window_days": COMPANY_WINDOW_DAYS,
+            "industry_window_days": INDUSTRY_WINDOW_DAYS,
+            "dbscan_eps": DBSCAN_EPS,
+            "dbscan_min_samples": DBSCAN_MIN_SAMPLES,
+            "min_articles_per_tag": MIN_ARTICLES_PER_TAG_BUCKET,
+            "excluded_tags": list(EXCLUDED_TAGS)
+        }
+        
+        clustering_run_id = create_clustering_run(config, {})
+        print(f"✓ Created clustering run: {clustering_run_id}\n")
+    
+    total_stats = {
+        "total_entities": len(entities),
+        "processed_entities": 0,
+        "total_clusters": 0,
+        "total_articles": 0
+    }
     
     # Process each entity
     for idx, entity in enumerate(entities, 1):
@@ -358,7 +370,6 @@ def run_clustering_pipeline():
         print(f"[{idx}/{len(entities)}] Processing: {entity['name']}")
         print(f"{'=' * 80}")
         
-        # Time window
         end_utc = datetime.utcnow()
         start_utc = end_utc - timedelta(days=entity['window_days'])
         
@@ -381,7 +392,7 @@ def run_clustering_pipeline():
             print("❌ Not enough raw articles, skipping\n")
             continue
         
-        # Fetch embedded articles (dedup-safe)
+        # Fetch embedded articles
         articles = list(
             embedded_col.find(
                 get_clustering_candidates_query(raw_article_ids)
@@ -408,11 +419,9 @@ def run_clustering_pipeline():
         tag_results = []
         
         for tag, tag_articles in tag_buckets.items():
-            # Skip excluded tags
             if tag in EXCLUDED_TAGS:
                 continue
             
-            # Skip small buckets
             if len(tag_articles) < MIN_ARTICLES_PER_TAG_BUCKET:
                 print(f"  ⚠️  {tag}: {len(tag_articles)} articles (too few, skipping)")
                 continue
@@ -425,11 +434,16 @@ def run_clustering_pipeline():
                 num_clusters = len(result["clusters"])
                 print(f"✓ {num_clusters} clusters found")
                 tag_results.append(result)
+                
+                total_stats["total_clusters"] += num_clusters
+                total_stats["total_articles"] += result["total_articles"]
             else:
                 print("❌ Failed (insufficient embeddings)")
         
         # Write results
         if tag_results:
+            total_stats["processed_entities"] += 1
+            
             identifier = entity.get('ticker') or entity.get('entity_id')
             filename = f"clustering_{identifier}_{start_utc.date()}_to_{end_utc.date()}.txt"
             output_path = os.path.join(OUTPUT_DIR, filename)
@@ -440,20 +454,60 @@ def run_clustering_pipeline():
                 "end_utc": end_utc
             }
             
+            # Write text file
             write_clustering_results(entity_info, tag_results, output_path)
+            print(f"\n✓ Text file written to: {output_path}")
             
-            print(f"\n✓ Results written to: {output_path}")
+            # Write to MongoDB
+            if WRITE_TO_MONGODB:
+                print("  Writing to MongoDB...", end=" ")
+                
+                time_window = {
+                    "start_utc": start_utc,
+                    "end_utc": end_utc
+                }
+                
+                mongo_stats = write_entity_clusters_to_mongodb(
+                    entity_info=entity,
+                    tag_results=tag_results,
+                    time_window=time_window,
+                    clustering_run_id=clustering_run_id
+                )
+                
+                print(f"✓ {mongo_stats['clusters_written']} clusters, {mongo_stats['articles_written']} articles")
+                
+                if UPDATE_ARTICLE_ASSIGNMENTS:
+                    print("  Updating article assignments...", end=" ")
+                    update_article_cluster_assignments(
+                        entity_info=entity,
+                        tag_results=tag_results,
+                        clustering_run_id=clustering_run_id
+                    )
+                    print("✓")
         else:
             print("\n❌ No clusters generated for this entity")
+    
+    # Update clustering run stats
+    if WRITE_TO_MONGODB and clustering_run_id:
+        runs_col = get_collection("clustering_runs")
+        runs_col.update_one(
+            {"_id": clustering_run_id},
+            {"$set": {"stats": total_stats}}
+        )
     
     print("\n" + "=" * 80)
     print("Pipeline Complete")
     print("=" * 80)
+    print(f"\nFinal Statistics:")
+    print(f"  Entities processed: {total_stats['processed_entities']}/{total_stats['total_entities']}")
+    print(f"  Total clusters: {total_stats['total_clusters']}")
+    print(f"  Total articles: {total_stats['total_articles']}")
+    
+    if WRITE_TO_MONGODB:
+        print(f"\n✓ All results written to MongoDB")
+        print(f"  Clustering run ID: {clustering_run_id}")
+        print(f"  Collection: story_clusters")
 
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
     run_clustering_pipeline()
