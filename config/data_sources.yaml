@@ -1,0 +1,73 @@
+# Data Sources Configuration for News Ingestion Pipeline
+# 
+# This file defines which news APIs to use for ingestion.
+# Multiple sources can be enabled simultaneously to maximize coverage.
+#
+# IMPORTANT: Add API keys to .env file:
+#   GNEWS_API_KEY=your_gnews_key_here
+#   NEWSDATA_API_KEY=your_newsdata_key_here
+
+data_sources:
+  # GNews API - Primary source
+  - name: gnews
+    enabled: true
+    priority: 1
+    description: "GNews API - stable, clean metadata"
+    limits:
+      requests_per_day: 100
+      max_results_per_request: 10
+    config:
+      language: en
+      sleep_between_requests: 1
+      timeout: 10
+    
+  # NewsData.io - Secondary/complementary source
+  - name: newsdata
+    enabled: true  # Set to true to enable
+    priority: 2
+    description: "NewsData.io - 2x request limit, category filtering"
+    limits:
+      requests_per_day: 200
+      max_results_per_request: 10
+    config:
+      language: en
+      sleep_between_requests: 1
+      timeout: 10
+      # Optional: Filter by category
+      # category: business  # Uncomment to use category-based fetching
+
+
+# Request allocation strategy
+# When multiple sources are enabled, how to split queries between them
+request_strategy:
+  mode: "all"  # Options: round_robin, priority, all
+  
+  # round_robin: Alternate between sources for each query (NOT RECOMMENDED for gold/silver)
+  # priority: Use priority 1 until quota exhausted, then priority 2
+  # all: Query all enabled sources for every query (RECOMMENDED - maximizes coverage)
+  
+  # Daily quota allocation (when mode = priority)
+  quota_split:
+    gnews: 80       # Use 80 GNews requests
+    newsdata: 150   # Use 150 NewsData requests
+                    # Total: 230 requests/day across both sources
+
+
+# Deduplication strategy
+# Since multiple sources may return the same article, handle duplicates
+deduplication:
+  method: "content_hash"  # Use content hash for deduplication (already implemented)
+  cross_source: true      # Deduplicate across different sources (recommended)
+  
+  # Source preference when same article found from multiple sources
+  # (Lower number = higher preference for metadata)
+  source_preference:
+    gnews: 1
+    newsdata: 2
+
+
+# Monitoring and logging
+monitoring:
+  log_source_usage: true           # Log which source was used for each query
+  track_quota_usage: true          # Track remaining API quota
+  alert_threshold: 0.9             # Alert when 90% of quota is used

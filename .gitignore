@@ -25,6 +25,8 @@ notebooks/
 .ipynb_checkpoints/
 
 ############################
+# Non-ingestion code (branch hygiene)
+############################
 # Logs
 ############################
 logs/
@@ -36,3 +38,12 @@ ingestion/news_sources/ingestion_test.py
 # OS
 ############################
 .DS_Store
+
+semantic_dedup/
+
+############################
+# Logs / outputs
+############################
+logs/
+outputs/
+outputs_test/
