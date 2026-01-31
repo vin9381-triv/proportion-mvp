@@ -1,0 +1,251 @@
+tags:
+  # ============ TECH/COMPANY TAGS ============
+  
+  earnings_financials:
+    description: Quarterly earnings, revenue, profit reports
+    keywords:
+      - earnings
+      - revenue
+      - profit
+      - quarterly results
+      - beats estimates
+      - misses estimates
+      - guidance
+      - outlook
+      - fiscal quarter
+      - net income
+      - eps
+      
+  product_launch:
+    description: New product announcements, releases, updates
+    keywords:
+      - launch
+      - announces
+      - unveils
+      - released
+      - new product
+      - introduces
+      - debuts
+      - rolls out
+      - update
+      - version
+      
+  leadership_strategy:
+    description: CEO changes, strategic shifts, restructuring
+    keywords:
+      - ceo
+      - executive
+      - leadership
+      - strategic
+      - restructuring
+      - layoffs
+      - hiring
+      - reorganization
+      - succession
+      
+  mergers_acquisitions:
+    description: M&A activity, partnerships, investments
+    keywords:
+      - acquisition
+      - merger
+      - acquires
+      - buyout
+      - partnership
+      - investment
+      - stake
+      - deal
+      - agrees to buy
+      
+  regulatory_legal:
+    description: Regulations, lawsuits, antitrust, compliance
+    keywords:
+      - lawsuit
+      - regulation
+      - antitrust
+      - legal
+      - court
+      - fine
+      - settlement
+      - compliance
+      - investigation
+      - sec
+      
+  # ============ MARKET/PRICE TAGS ============
+  
+  price_volatility:
+    description: Stock/commodity price movements, volatility
+    keywords:
+      - price
+      - prices
+      - surge
+      - plunge
+      - record high
+      - record low
+      - volatility
+      - rally
+      - falls
+      - hits
+      - soars
+      - tumbles
+      - gains
+      - losses
+      - peak
+      - drops
+      
+  analyst_ratings:
+    description: Analyst upgrades, downgrades, price targets
+    keywords:
+      - analyst
+      - upgrade
+      - downgrade
+      - rating
+      - price target
+      - overweight
+      - underweight
+      - buy rating
+      - sell rating
+      - neutral
+      
+  # ============ MACRO/POLICY TAGS ============
+  
+  monetary_policy:
+    description: Central bank decisions, interest rates, QE
+    keywords:
+      - interest rate
+      - fed
+      - federal reserve
+      - central bank
+      - fomc
+      - monetary policy
+      - rate hike
+      - rate cut
+      - quantitative easing
+      - powell
+      - ecb
+      - pboc
+      
+  inflation_economy:
+    description: Inflation reports, CPI, economic indicators
+    keywords:
+      - inflation
+      - cpi
+      - pce
+      - ppi
+      - consumer price
+      - economic growth
+      - gdp
+      - recession
+      - unemployment
+      
+  currency_dollar:
+    description: Dollar strength, forex, currency dynamics
+    keywords:
+      - dollar
+      - dxy
+      - currency
+      - forex
+      - exchange rate
+      - dollar index
+      - strong dollar
+      - weak dollar
+      
+  # ============ TRADE/POLICY TAGS ============
+  
+  trade_tariffs:
+    description: Trade policy, tariffs, exports/imports
+    keywords:
+      - tariff
+      - trade war
+      - export
+      - import
+      - trade policy
+      - customs
+      - shipment
+      - trade deal
+      
+  government_policy:
+    description: Government budgets, duties, GST, subsidies
+    keywords:
+      - budget
+      - duty
+      - gst
+      - tax
+      - subsidy
+      - policy
+      - government
+      - relief
+      - rationalisation
+      
+  # ============ DEMAND/CONSUMER TAGS ============
+  
+  consumer_demand:
+    description: Retail demand, consumer behavior, seasonality
+    keywords:
+      - demand
+      - consumer
+      - retail
+      - wedding
+      - festival
+      - buying
+      - footfall
+      - shopping
+      - sales
+      
+  physical_demand:
+    description: Physical commodity demand (gold, silver, etc)
+    keywords:
+      - physical demand
+      - jewelry demand
+      - gold demand
+      - silver demand
+      - bullion
+      - coins
+      - bars
+      
+  # ============ INNOVATION/TECH TAGS ============
+  
+  ai_innovation:
+    description: AI advancements, machine learning, tech breakthroughs
+    keywords:
+      - artificial intelligence
+      - ai
+      - machine learning
+      - chatgpt
+      - generative ai
+      - llm
+      - neural network
+      - deep learning
+      
+  innovation_rd:
+    description: R&D, new technologies, patents, innovation
+    keywords:
+      - innovation
+      - research
+      - development
+      - patent
+      - breakthrough
+      - technology
+      - lab-grown
+      - materials
+      
+  # ============ NOISE TAGS (to exclude) ============
+  
+  crime_noise:
+    description: Crime, theft, non-market events
+    keywords:
+      - stolen
+      - theft
+      - robbed
+      - robbery
+      - loot
+      - crime
+      - burglary
+      
+  spam_clickbait:
+    description: Low-quality, promotional, spam content
+    keywords:
+      - click here
+      - sign up now
+      - limited offer
+      - you won't believe
+      - this one trick
