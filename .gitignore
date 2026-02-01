@@ -31,9 +31,12 @@ notebooks/
 ############################
 logs/
 outputs/
-processing/clustering/
 ingestion/news_sources/articles_title.py
 ingestion/news_sources/ingestion_test.py
+processing/stance_detection/
+processing/clustering/clustering_test.py
+processing/clustering/input_resolver_test.py
+processing/clustering/diagnostic_test.py
 ############################
 # OS
 ############################
@@ -47,3 +50,4 @@ semantic_dedup/
 logs/
 outputs/
 outputs_test/
+test_outputs/
