@@ -23,6 +23,9 @@ data/processed/
 ############################
 notebooks/
 .ipynb_checkpoints/
+processing/clustering
+processing/dashboard
+ingestion/
 
 ############################
 # Logs
