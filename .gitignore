@@ -40,6 +40,7 @@ processing/clustering/outputs_test/
 processing/clustering/clustering_test.py
 processing/clustering/input_resolver_test.py
 processing/clustering/diagnostic_test.py
+processing/dashboard
 
 ############################
 # OS
