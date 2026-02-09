@@ -1,20 +1,23 @@
 """
-Unified Story Clustering Pipeline with MongoDB Integration
-===========================================================
+Multi-Timeframe Clustering - Snapshot Mode
 
-Two-stage clustering approach:
-1. Tag-based pre-filtering (removes noise, groups by story type)
-2. DBSCAN clustering within each tag bucket (finds actual story clusters)
+Simplest approach:
+- For each (entity, window_days) pair, keep only latest clustering result
+- Delete old clusters before creating new ones
+- No deduplication logic needed
+- Re-running is safe (overwrites previous)
 
-Saves results to both:
-- Text files (for human review)
-- MongoDB (for stance detection and downstream processing)
+Time windows:
+- 3d: Breaking stories
+- 7d: Developing narratives
+- 14d: Ongoing stories
+- 30d: Long-term trends
 """
 
-from datetime import datetime, timedelta
-from collections import defaultdict
 import os
 import yaml
+from datetime import datetime, timedelta
+from collections import defaultdict
 from pathlib import Path
 import numpy as np
 
@@ -22,11 +25,6 @@ from processing.common.mongo_client import get_collection
 from processing.clustering.input_resolver import get_raw_article_ids_for_entity
 from processing.clustering.queries import get_clustering_candidates_query
 from processing.clustering.density_stage import run_dbscan
-from processing.clustering.cluster_mongodb_writer import (
-    create_clustering_run,
-    write_entity_clusters_to_mongodb,
-    update_article_cluster_assignments
-)
 
 
 # ============================================================
@@ -38,476 +36,376 @@ TAG_CONFIG_PATH = "config/clustering_tags.yaml"
 OUTPUT_DIR = "processing/clustering/outputs"
 
 # Time windows (days)
-COMPANY_WINDOW_DAYS = 3
-INDUSTRY_WINDOW_DAYS = 7
+TIME_WINDOWS = [3, 7, 14, 30]
 
-# Minimum thresholds
-MIN_ARTICLES_PER_ENTITY = 5
-MIN_ARTICLES_PER_TAG_BUCKET = 2
+# Minimum articles required per window
+MIN_ARTICLES = {
+    3: 3,
+    7: 5,
+    14: 8,
+    30: 10,
+}
 
-# Tags to exclude from clustering (noise)
+# Tags to exclude
 EXCLUDED_TAGS = {"crime_noise", "spam_clickbait", "other"}
 
 # DBSCAN parameters
 DBSCAN_EPS = 0.5
 DBSCAN_MIN_SAMPLES = 2
 
-# MongoDB configuration
-WRITE_TO_MONGODB = True  # Set to False to only generate text files
-UPDATE_ARTICLE_ASSIGNMENTS = True  # Update articles_embedded with cluster IDs
-
-
-# ============================================================
-# TAG CONFIGURATION LOADER
-# ============================================================
-
-def load_tag_config(config_path):
-    """Load tag configuration from YAML."""
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-    
-    if "tags" not in config:
-        raise ValueError("Invalid tag config: missing 'tags' key")
-    
-    return config["tags"]
-
 
 # ============================================================
 # ENTITY LOADER
 # ============================================================
 
-def load_entities(ticker_config_path):
-    """
-    Load all entities (companies + industries/macro entities).
-    
-    Returns list of dicts with keys:
-    - entity_type: "company" | "industry" | "monetary_policy" | etc.
-    - name
-    - ticker (for companies) or entity_id (for industries)
-    - window_days (computed based on entity_type)
-    """
-    with open(ticker_config_path, "r") as f:
+def load_entities():
+    """Load entities from ticker.yaml."""
+    with open(TICKER_CONFIG_PATH, 'r') as f:
         config = yaml.safe_load(f)
     
     entities = []
     
-    # Add companies
-    for company in config.get("companies", []):
+    # Companies
+    for company in config.get('companies', []):
         entities.append({
-            "entity_type": "company",
-            "name": company["name"],
-            "ticker": company["ticker"],
-            "entity_id": company.get("entity_id"),  # May be None
-            "window_days": COMPANY_WINDOW_DAYS
+            'entity_id': company['entity_id'],
+            'entity_name': company['name'],
+            'entity_type': 'company',
+            'ticker': company.get('ticker'),
         })
     
-    # Add all industry/macro entities
-    for key in config.keys():
-        if key == "companies":
-            continue
-        
+    # Other entities
+    for key in ['monetary_policy', 'macroeconomic_dollar', 'macroeconomic_inflation', 'industries', 'physical_demand']:
         for entity in config.get(key, []):
-            if "entity_id" in entity and "name" in entity:
-                entities.append({
-                    "entity_type": entity.get("entity_type", key),
-                    "name": entity["name"],
-                    "ticker": None,
-                    "entity_id": entity["entity_id"],
-                    "window_days": INDUSTRY_WINDOW_DAYS
-                })
+            entities.append({
+                'entity_id': entity['entity_id'],
+                'entity_name': entity['name'],
+                'entity_type': entity.get('entity_type', key),
+                'ticker': None,
+            })
     
     return entities
 
 
 # ============================================================
-# TAGGING LOGIC
+# TAG LOADER
+# ============================================================
+
+def load_tag_config():
+    """Load tag configuration."""
+    with open(TAG_CONFIG_PATH, 'r') as f:
+        config = yaml.safe_load(f)
+    return config.get('tags', {})
+
+
+# ============================================================
+# ARTICLE TAGGER
 # ============================================================
 
 class ArticleTagger:
-    """
-    Tags articles based on keyword matching.
-    First match wins, falls back to 'other'.
-    """
+    """Tag articles based on keyword matching."""
     
     def __init__(self, tag_config):
         self.tag_config = tag_config
     
     def tag_article(self, article):
-        """
-        Assign single primary tag to article.
-        
-        Args:
-            article: dict with 'title' and 'body' fields
-            
-        Returns:
-            str: tag name
-        """
+        """Assign single tag to article."""
         text = (
             (article.get("title") or "") + " " +
-            (article.get("body") or "")
+            (article.get("raw_text") or "")
         ).lower()
         
+        # Check noise tags FIRST
+        for tag in ["crime_noise", "spam_clickbait"]:
+            if tag in self.tag_config:
+                keywords = self.tag_config[tag].get("keywords", [])
+                for kw in keywords:
+                    if kw.lower() in text:
+                        return tag
+        
+        # Then check other tags
         for tag, cfg in self.tag_config.items():
+            if tag in ["crime_noise", "spam_clickbait"]:
+                continue
             keywords = cfg.get("keywords", [])
             for kw in keywords:
                 if kw.lower() in text:
                     return tag
         
         return "other"
-    
-    def tag_articles(self, articles):
-        """
-        Tag multiple articles and organize into buckets.
-        
-        Args:
-            articles: list of article dicts
-            
-        Returns:
-            dict: {tag_name: [article, article, ...]}
-        """
-        tag_buckets = defaultdict(list)
-        
-        for article in articles:
-            tag = self.tag_article(article)
-            tag_buckets[tag].append(article)
-        
-        return dict(tag_buckets)
 
 
 # ============================================================
 # CLUSTERING LOGIC
 # ============================================================
 
-def cluster_tag_bucket(articles, tag_name):
+def cluster_articles_for_window(
+    entity,
+    window_days,
+    tagger,
+    embedded_col,
+    clusters_col
+):
     """
-    Cluster articles within a single tag bucket.
+    Cluster articles for specific entity + window combination.
     
-    Args:
-        articles: list of article dicts (all same tag)
-        tag_name: str, name of the tag
-        
-    Returns:
-        dict: {
-            "tag": tag_name,
-            "total_articles": int,
-            "clusters": {
-                cluster_id: [article, article, ...],
-                ...
-            }
-        }
+    Steps:
+    1. Delete old clusters for this (entity, window_days)
+    2. Fetch articles
+    3. Tag and filter
+    4. Run DBSCAN
+    5. Write new clusters
     """
-    if len(articles) < MIN_ARTICLES_PER_TAG_BUCKET:
-        return None
     
-    # Build feature matrix
-    vectors = []
-    valid_articles = []
+    print(f"\n  [{window_days}d window]")
     
+    # STEP 1: Delete old clusters for this (entity, window_days)
+    delete_result = clusters_col.delete_many({
+        'entity_id': entity['entity_id'],
+        'window_days': window_days
+    })
+    
+    if delete_result.deleted_count > 0:
+        print(f"    🗑️  Deleted {delete_result.deleted_count} old clusters")
+    
+    # STEP 2: Fetch articles
+    end_utc = datetime.utcnow()
+    start_utc = end_utc - timedelta(days=window_days)
+    
+    raw_article_ids = get_raw_article_ids_for_entity(
+        start_utc=start_utc,
+        end_utc=end_utc,
+        entity_type=entity['entity_type'],
+        tickers=[entity['ticker']] if entity['ticker'] else None,
+        entity_id=entity['entity_id']
+    )
+    
+    print(f"    Raw articles: {len(raw_article_ids)}")
+    
+    if len(raw_article_ids) < MIN_ARTICLES[window_days]:
+        print(f"    ⚠️  Not enough articles (need {MIN_ARTICLES[window_days]})")
+        return 0
+    
+    articles = list(
+        embedded_col.find(
+            get_clustering_candidates_query(raw_article_ids)
+        )
+    )
+    
+    print(f"    Embedded: {len(articles)}")
+    
+    if len(articles) < MIN_ARTICLES[window_days]:
+        print(f"    ⚠️  Not enough embedded")
+        return 0
+    
+    # STEP 3: Tag and filter
+    tag_buckets = defaultdict(list)
     for article in articles:
-        if "embeddings" not in article or "body" not in article["embeddings"]:
+        tag = tagger.tag_article(article)
+        if tag not in EXCLUDED_TAGS:
+            tag_buckets[tag].append(article)
+    
+    print(f"    Tag buckets: {len(tag_buckets)}")
+    
+    # STEP 4 & 5: Cluster each tag bucket and write
+    total_clusters = 0
+    
+    for tag, tag_articles in tag_buckets.items():
+        if len(tag_articles) < 2:
             continue
         
-        vectors.append(article["embeddings"]["body"])
-        valid_articles.append(article)
-    
-    if len(vectors) < MIN_ARTICLES_PER_TAG_BUCKET:
-        return None
-    
-    X = np.array(vectors)
-    
-    # Run DBSCAN
-    labels = run_dbscan(X, eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES)
-    
-    # Organize into clusters
-    clusters = defaultdict(list)
-    for label, article in zip(labels, valid_articles):
-        clusters[label].append(article)
-    
-    return {
-        "tag": tag_name,
-        "total_articles": len(articles),
-        "clusters": dict(clusters)
-    }
-
-
-# ============================================================
-# OUTPUT WRITER (Text Files)
-# ============================================================
-
-def write_clustering_results(entity_info, tag_results, output_path):
-    """Write human-readable clustering results to file."""
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("=" * 80 + "\n")
-        f.write("PROPORTION — Story Clustering Results\n")
-        f.write("=" * 80 + "\n")
-        f.write(f"Generated at: {datetime.utcnow().isoformat()} UTC\n\n")
+        # Extract embeddings
+        vectors = []
+        valid_articles = []
         
-        f.write(f"Entity      : {entity_info['name']}\n")
-        f.write(f"Type        : {entity_info['entity_type']}\n")
-        f.write(f"Identifier  : {entity_info.get('ticker') or entity_info.get('entity_id')}\n")
-        f.write(f"Window      : {entity_info['start_utc'].date()} → {entity_info['end_utc'].date()}\n")
-        f.write("=" * 80 + "\n\n")
+        for article in tag_articles:
+            if 'embeddings' in article and 'body' in article['embeddings']:
+                vectors.append(article['embeddings']['body'])
+                valid_articles.append(article)
         
-        # Summary stats
-        f.write("SUMMARY\n")
-        f.write("-" * 80 + "\n")
-        total_articles = sum(r["total_articles"] for r in tag_results if r)
-        total_tags = len([r for r in tag_results if r])
-        total_clusters = sum(len(r["clusters"]) for r in tag_results if r)
+        if len(vectors) < 2:
+            continue
         
-        f.write(f"Total Articles Processed: {total_articles}\n")
-        f.write(f"Active Tag Buckets      : {total_tags}\n")
-        f.write(f"Total Clusters Found    : {total_clusters}\n\n")
+        # Run DBSCAN
+        X = np.array(vectors)
+        labels = run_dbscan(X, eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES)
         
-        # Tag distribution
-        f.write("TAG DISTRIBUTION\n")
-        f.write("-" * 80 + "\n")
-        for result in tag_results:
-            if result:
-                tag = result["tag"]
-                count = result["total_articles"]
-                num_clusters = len(result["clusters"])
-                f.write(f"  {tag:<30} {count:>4} articles → {num_clusters} clusters\n")
-        f.write("\n\n")
+        # Group by cluster label
+        clusters_dict = defaultdict(list)
+        for label, article in zip(labels, valid_articles):
+            clusters_dict[int(label)].append(article)
         
-        # Detailed cluster results
-        f.write("=" * 80 + "\n")
-        f.write("DETAILED CLUSTER RESULTS\n")
-        f.write("=" * 80 + "\n\n")
-        
-        for result in tag_results:
-            if not result:
+        # Write clusters
+        for label, members in clusters_dict.items():
+            # Skip tiny noise clusters
+            if label == -1 and len(members) < 2:
                 continue
             
-            tag = result["tag"]
-            clusters = result["clusters"]
-            
-            f.write("=" * 80 + "\n")
-            f.write(f"TAG: {tag.upper()}\n")
-            f.write("=" * 80 + "\n\n")
-            
-            sorted_clusters = sorted(
-                clusters.items(),
-                key=lambda x: len(x[1]),
-                reverse=True
+            write_cluster(
+                entity=entity,
+                tag=tag,
+                label=label,
+                window_days=window_days,
+                members=members,
+                clusters_col=clusters_col
             )
             
-            for cluster_id, members in sorted_clusters:
-                f.write("-" * 80 + "\n")
-                
-                if cluster_id == -1:
-                    f.write(f"NOISE (Cluster ID: {cluster_id})\n")
-                else:
-                    f.write(f"Cluster ID: {cluster_id}\n")
-                
-                f.write(f"Size: {len(members)} articles\n")
-                f.write("-" * 80 + "\n\n")
-                
-                for article in members:
-                    title = article.get("title", "").strip()
-                    published_utc = article.get("published_at_utc", "N/A")
-                    
-                    f.write(f"• {title}\n")
-                    f.write(f"  Published: {published_utc}\n\n")
-                
-                f.write("\n")
-            
-            f.write("\n\n")
+            total_clusters += 1
+    
+    print(f"    ✅ Created {total_clusters} clusters")
+    return total_clusters
+
+
+def write_cluster(entity, tag, label, window_days, members, clusters_col):
+    """Write cluster to MongoDB."""
+    
+    # Build cluster ID
+    date_str = datetime.utcnow().strftime("%Y%m%d")
+    cluster_id = f"{entity['entity_id']}|{tag}|{label}|{window_days}d|{date_str}"
+    
+    # Build article references
+    article_refs = []
+    article_ids = []
+    published_times = []
+    embeddings_list = []
+    
+    for article in members:
+        article_refs.append({
+            'article_id': article['_id'],
+            'title': article.get('title'),
+            'published_at_utc': article.get('published_at_utc'),
+            'raw_article_id': article.get('raw_article_id')
+        })
+        
+        article_ids.append(article['_id'])
+        
+        if article.get('published_at_utc'):
+            published_times.append(article['published_at_utc'])
+        
+        emb = article.get('embeddings', {}).get('body')
+        if emb:
+            embeddings_list.append(emb)
+    
+    # Calculate centroid
+    centroid = None
+    if embeddings_list:
+        centroid = np.mean(np.array(embeddings_list), axis=0).tolist()
+    
+    # Temporal metadata
+    first_published = min(published_times) if published_times else None
+    last_published = max(published_times) if published_times else None
+    
+    # Build document
+    doc = {
+        'cluster_id': cluster_id,
+        
+        # Entity
+        'entity_id': entity['entity_id'],
+        'entity_name': entity['entity_name'],
+        'entity_type': entity['entity_type'],
+        'ticker': entity.get('ticker'),
+        
+        # Tag
+        'tag': tag,
+        
+        # Timeframe (NEW)
+        'window_days': window_days,
+        'timeframe': f"{window_days}d",
+        
+        # Cluster metadata
+        'cluster_label': int(label),
+        'is_closed': False,
+        
+        # Articles
+        'articles': article_refs,
+        'article_ids': article_ids,
+        
+        # Geometry
+        'centroid': centroid,
+        
+        # Metrics
+        'cluster_metadata': {
+            'size': len(article_ids),
+            'first_published': first_published,
+            'last_published': last_published,
+            'is_noise': bool(label == -1)
+        },
+        
+        # Audit
+        'created_at': datetime.utcnow(),
+        'last_updated': datetime.utcnow(),
+    }
+    
+    # Write
+    clusters_col.insert_one(doc)
 
 
 # ============================================================
 # MAIN PIPELINE
 # ============================================================
 
-def run_clustering_pipeline():
+def run_multi_timeframe_clustering():
     """
-    Main clustering pipeline entry point.
+    Run clustering with multiple time windows.
+    
+    For each (entity, window_days):
+    - Delete old clusters
+    - Create new clusters
+    - Result: Latest snapshot only
     """
+    
     print("=" * 80)
-    print("Starting Unified Story Clustering Pipeline")
+    print("MULTI-TIMEFRAME CLUSTERING (SNAPSHOT MODE)")
     print("=" * 80)
+    print(f"\nTime windows: {TIME_WINDOWS} days")
     print()
     
-    # Load configurations
-    entities = load_entities(TICKER_CONFIG_PATH)
-    tag_config = load_tag_config(TAG_CONFIG_PATH)
+    # Load config
+    entities = load_entities()
+    tag_config = load_tag_config()
     tagger = ArticleTagger(tag_config)
     
-    embedded_col = get_collection("articles_embedded")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    embedded_col = get_collection('articles_embedded')
+    clusters_col = get_collection('story_clusters')
     
     print(f"Loaded {len(entities)} entities")
     print(f"Loaded {len(tag_config)} tags")
-    print(f"Excluding tags: {', '.join(EXCLUDED_TAGS)}")
-    print(f"MongoDB Write: {WRITE_TO_MONGODB}")
+    print(f"Excluded tags: {EXCLUDED_TAGS}")
     print()
     
-    # Create clustering run record
-    clustering_run_id = None
-    if WRITE_TO_MONGODB:
-        config = {
-            "company_window_days": COMPANY_WINDOW_DAYS,
-            "industry_window_days": INDUSTRY_WINDOW_DAYS,
-            "dbscan_eps": DBSCAN_EPS,
-            "dbscan_min_samples": DBSCAN_MIN_SAMPLES,
-            "min_articles_per_tag": MIN_ARTICLES_PER_TAG_BUCKET,
-            "excluded_tags": list(EXCLUDED_TAGS)
-        }
-        
-        clustering_run_id = create_clustering_run(config, {})
-        print(f"✓ Created clustering run: {clustering_run_id}\n")
-    
-    total_stats = {
-        "total_entities": len(entities),
-        "processed_entities": 0,
-        "total_clusters": 0,
-        "total_articles": 0
-    }
+    # Stats
+    total_clusters = 0
+    stats_by_window = {w: 0 for w in TIME_WINDOWS}
     
     # Process each entity
     for idx, entity in enumerate(entities, 1):
         print(f"\n{'=' * 80}")
-        print(f"[{idx}/{len(entities)}] Processing: {entity['name']}")
+        print(f"[{idx}/{len(entities)}] {entity['entity_name']} ({entity['entity_type']})")
         print(f"{'=' * 80}")
         
-        end_utc = datetime.utcnow()
-        start_utc = end_utc - timedelta(days=entity['window_days'])
-        
-        print(f"Type       : {entity['entity_type']}")
-        print(f"Identifier : {entity.get('ticker') or entity.get('entity_id')}")
-        print(f"Window     : {start_utc.date()} → {end_utc.date()}")
-        
-        # Fetch raw article IDs
-        raw_article_ids = get_raw_article_ids_for_entity(
-            start_utc=start_utc,
-            end_utc=end_utc,
-            entity_type=entity['entity_type'],
-            tickers=[entity['ticker']] if entity['ticker'] else None,
-            entity_id=entity['entity_id']
-        )
-        
-        print(f"Raw articles: {len(raw_article_ids)}")
-        
-        if len(raw_article_ids) < MIN_ARTICLES_PER_ENTITY:
-            print("❌ Not enough raw articles, skipping\n")
-            continue
-        
-        # Fetch embedded articles
-        articles = list(
-            embedded_col.find(
-                get_clustering_candidates_query(raw_article_ids)
+        # Process each time window
+        for window_days in TIME_WINDOWS:
+            clusters_created = cluster_articles_for_window(
+                entity=entity,
+                window_days=window_days,
+                tagger=tagger,
+                embedded_col=embedded_col,
+                clusters_col=clusters_col
             )
-        )
-        
-        print(f"Embedded articles (post-dedup): {len(articles)}")
-        
-        if len(articles) < MIN_ARTICLES_PER_ENTITY:
-            print("❌ Not enough embedded articles, skipping\n")
-            continue
-        
-        # STAGE 1: Tag all articles
-        print("\n--- STAGE 1: Tagging ---")
-        tag_buckets = tagger.tag_articles(articles)
-        
-        print("Tag distribution:")
-        for tag, items in sorted(tag_buckets.items(), key=lambda x: len(x[1]), reverse=True):
-            status = "❌ EXCLUDED" if tag in EXCLUDED_TAGS else "✓"
-            print(f"  {status} {tag:<30} {len(items):>4} articles")
-        
-        # STAGE 2: Cluster each tag bucket
-        print("\n--- STAGE 2: Clustering ---")
-        tag_results = []
-        
-        for tag, tag_articles in tag_buckets.items():
-            if tag in EXCLUDED_TAGS:
-                continue
             
-            if len(tag_articles) < MIN_ARTICLES_PER_TAG_BUCKET:
-                print(f"  ⚠️  {tag}: {len(tag_articles)} articles (too few, skipping)")
-                continue
-            
-            print(f"  Clustering {tag}: {len(tag_articles)} articles...", end=" ")
-            
-            result = cluster_tag_bucket(tag_articles, tag)
-            
-            if result:
-                num_clusters = len(result["clusters"])
-                print(f"✓ {num_clusters} clusters found")
-                tag_results.append(result)
-                
-                total_stats["total_clusters"] += num_clusters
-                total_stats["total_articles"] += result["total_articles"]
-            else:
-                print("❌ Failed (insufficient embeddings)")
-        
-        # Write results
-        if tag_results:
-            total_stats["processed_entities"] += 1
-            
-            identifier = entity.get('ticker') or entity.get('entity_id')
-            filename = f"clustering_{identifier}_{start_utc.date()}_to_{end_utc.date()}.txt"
-            output_path = os.path.join(OUTPUT_DIR, filename)
-            
-            entity_info = {
-                **entity,
-                "start_utc": start_utc,
-                "end_utc": end_utc
-            }
-            
-            # Write text file
-            write_clustering_results(entity_info, tag_results, output_path)
-            print(f"\n✓ Text file written to: {output_path}")
-            
-            # Write to MongoDB
-            if WRITE_TO_MONGODB:
-                print("  Writing to MongoDB...", end=" ")
-                
-                time_window = {
-                    "start_utc": start_utc,
-                    "end_utc": end_utc
-                }
-                
-                mongo_stats = write_entity_clusters_to_mongodb(
-                    entity_info=entity,
-                    tag_results=tag_results,
-                    time_window=time_window,
-                    clustering_run_id=clustering_run_id
-                )
-                
-                print(f"✓ {mongo_stats['clusters_written']} clusters, {mongo_stats['articles_written']} articles")
-                
-                if UPDATE_ARTICLE_ASSIGNMENTS:
-                    print("  Updating article assignments...", end=" ")
-                    update_article_cluster_assignments(
-                        entity_info=entity,
-                        tag_results=tag_results,
-                        clustering_run_id=clustering_run_id
-                    )
-                    print("✓")
-        else:
-            print("\n❌ No clusters generated for this entity")
+            total_clusters += clusters_created
+            stats_by_window[window_days] += clusters_created
     
-    # Update clustering run stats
-    if WRITE_TO_MONGODB and clustering_run_id:
-        runs_col = get_collection("clustering_runs")
-        runs_col.update_one(
-            {"_id": clustering_run_id},
-            {"$set": {"stats": total_stats}}
-        )
-    
+    # Final stats
     print("\n" + "=" * 80)
-    print("Pipeline Complete")
+    print("CLUSTERING COMPLETE")
     print("=" * 80)
-    print(f"\nFinal Statistics:")
-    print(f"  Entities processed: {total_stats['processed_entities']}/{total_stats['total_entities']}")
-    print(f"  Total clusters: {total_stats['total_clusters']}")
-    print(f"  Total articles: {total_stats['total_articles']}")
-    
-    if WRITE_TO_MONGODB:
-        print(f"\n✓ All results written to MongoDB")
-        print(f"  Clustering run ID: {clustering_run_id}")
-        print(f"  Collection: story_clusters")
+    print(f"\nTotal clusters created: {total_clusters}")
+    print("\nBy timeframe:")
+    for window_days in TIME_WINDOWS:
+        print(f"  {window_days}d: {stats_by_window[window_days]} clusters")
+    print("=" * 80)
 
 
 if __name__ == "__main__":
-    run_clustering_pipeline()
+    run_multi_timeframe_clustering()

@@ -1,288 +1,245 @@
-#!/usr/bin/env python3
 """
-Cluster Viewer - View Story Clusters from MongoDB
-==================================================
+Multi-Timeframe Cluster Viewer
 
-Usage:
-  python view_clusters.py                    # View all clusters
-  python view_clusters.py --entity MSFT      # View MSFT clusters
-  python view_clusters.py --tag product_launch  # View product launch clusters
-  python view_clusters.py --min-size 5       # Only clusters with 5+ articles
-  python view_clusters.py --latest           # Only today's clusters
+View clusters organized by timeframe with filtering and stats.
 """
 
 import argparse
-from datetime import datetime, timedelta
-from processing.clustering.cluster_mongodb_writer import (
-    get_clusters_for_entity,
-    get_clusters_by_tag,
-    get_articles_for_cluster,
-    get_clustering_stats
-)
 from processing.common.mongo_client import get_collection
 
 
-def format_cluster_summary(cluster):
-    """Format a cluster for display."""
-    lines = []
-    lines.append("=" * 80)
-    lines.append(f"Cluster ID: {cluster['cluster_id']}")
-    lines.append(f"Entity: {cluster['entity_name']} ({cluster['entity_type']})")
-    lines.append(f"Tag: {cluster['tag']}")
-    lines.append(f"Size: {cluster['cluster_metadata']['size']} articles")
+def view_clusters(
+    entity_id=None,
+    window_days=None,
+    tag=None,
+    show_articles=False
+):
+    """View clusters with filters."""
     
-    if cluster['cluster_metadata'].get('first_published'):
-        lines.append(f"First Published: {cluster['cluster_metadata']['first_published']}")
-    if cluster['cluster_metadata'].get('last_published'):
-        lines.append(f"Last Published: {cluster['cluster_metadata']['last_published']}")
+    print("=" * 80)
+    print("MULTI-TIMEFRAME CLUSTER VIEWER")
+    print("=" * 80)
     
-    if cluster['cluster_metadata'].get('velocity'):
-        lines.append(f"Velocity: {cluster['cluster_metadata']['velocity']:.2f} articles/hour")
+    clusters_col = get_collection('story_clusters')
     
-    lines.append("-" * 80)
-    lines.append("Articles:")
+    # Build query
+    query = {}
     
-    for article_ref in cluster['articles']:
-        lines.append(f"  • {article_ref['title']}")
-        lines.append(f"    Published: {article_ref['published_at_utc']}")
+    if entity_id:
+        query['entity_id'] = entity_id
     
-    lines.append("")
-    return "\n".join(lines)
-
-
-def view_all_clusters(min_size=2, max_results=50):
-    """View all clusters."""
-    clusters_col = get_collection("story_clusters")
+    if window_days:
+        query['window_days'] = window_days
     
-    query = {
-        "cluster_metadata.size": {"$gte": min_size},
-        "cluster_metadata.is_noise": False
-    }
+    if tag:
+        query['tag'] = tag
     
-    clusters = list(
-        clusters_col.find(query)
-        .sort("cluster_metadata.size", -1)
-        .limit(max_results)
-    )
-    
-    print(f"\n{'=' * 80}")
-    print(f"ALL CLUSTERS (min_size={min_size}, showing top {max_results})")
-    print(f"{'=' * 80}\n")
-    
-    for cluster in clusters:
-        print(format_cluster_summary(cluster))
-    
-    print(f"\nTotal clusters shown: {len(clusters)}")
-
-
-def view_clusters_by_entity(entity_identifier, min_size=2):
-    """View clusters for a specific entity."""
-    # Try to find entity_id from ticker
-    # This is a simple lookup - you may need to enhance this
-    clusters_col = get_collection("story_clusters")
-    
-    # Search by ticker or entity_id
-    query = {
-        "$or": [
-            {"ticker": entity_identifier},
-            {"entity_id": entity_identifier},
-            {"entity_name": {"$regex": entity_identifier, "$options": "i"}}
-        ],
-        "cluster_metadata.size": {"$gte": min_size},
-        "cluster_metadata.is_noise": False
-    }
-    
-    clusters = list(
-        clusters_col.find(query)
-        .sort("cluster_metadata.size", -1)
-    )
+    # Fetch clusters
+    clusters = list(clusters_col.find(query).sort([
+        ('entity_id', 1),
+        ('window_days', 1),
+        ('tag', 1)
+    ]))
     
     if not clusters:
-        print(f"\n❌ No clusters found for entity: {entity_identifier}")
+        print("\n❌ No clusters found")
         return
     
-    print(f"\n{'=' * 80}")
-    print(f"CLUSTERS FOR: {entity_identifier}")
-    print(f"{'=' * 80}\n")
+    print(f"\nFound {len(clusters)} clusters")
+    
+    # Group by entity and window
+    current_entity = None
+    current_window = None
     
     for cluster in clusters:
-        print(format_cluster_summary(cluster))
-    
-    print(f"\nTotal clusters: {len(clusters)}")
-
-
-def view_clusters_by_tag(tag, min_size=2):
-    """View clusters with a specific tag."""
-    clusters = get_clusters_by_tag(tag, min_size)
-    
-    if not clusters:
-        print(f"\n❌ No clusters found for tag: {tag}")
-        return
-    
-    print(f"\n{'=' * 80}")
-    print(f"CLUSTERS WITH TAG: {tag}")
-    print(f"{'=' * 80}\n")
-    
-    for cluster in clusters:
-        print(format_cluster_summary(cluster))
-    
-    print(f"\nTotal clusters: {len(clusters)}")
-
-
-def view_latest_clusters(hours=24, min_size=2):
-    """View clusters created in the last N hours."""
-    clusters_col = get_collection("story_clusters")
-    
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
-    
-    query = {
-        "created_at": {"$gte": cutoff},
-        "cluster_metadata.size": {"$gte": min_size},
-        "cluster_metadata.is_noise": False
-    }
-    
-    clusters = list(
-        clusters_col.find(query)
-        .sort("created_at", -1)
-    )
-    
-    if not clusters:
-        print(f"\n❌ No clusters found in the last {hours} hours")
-        return
-    
-    print(f"\n{'=' * 80}")
-    print(f"LATEST CLUSTERS (last {hours} hours)")
-    print(f"{'=' * 80}\n")
-    
-    for cluster in clusters:
-        print(format_cluster_summary(cluster))
-    
-    print(f"\nTotal clusters: {len(clusters)}")
-
-
-def view_cluster_details(cluster_id):
-    """View full details of a specific cluster."""
-    clusters_col = get_collection("story_clusters")
-    
-    cluster = clusters_col.find_one({"cluster_id": cluster_id})
-    
-    if not cluster:
-        print(f"\n❌ Cluster not found: {cluster_id}")
-        return
-    
-    print(f"\n{'=' * 80}")
-    print(f"CLUSTER DETAILS: {cluster_id}")
-    print(f"{'=' * 80}\n")
-    
-    print(format_cluster_summary(cluster))
-    
-    # Get full articles
-    articles = get_articles_for_cluster(cluster_id)
-    
-    if articles:
-        print("\n" + "=" * 80)
-        print("FULL ARTICLE CONTENT")
-        print("=" * 80 + "\n")
+        entity_name = cluster.get('entity_name')
+        entity_id_val = cluster.get('entity_id')
+        window = cluster.get('window_days')
+        tag_val = cluster.get('tag')
+        cluster_id = cluster.get('cluster_id')
+        size = cluster.get('cluster_metadata', {}).get('size', 0)
         
-        for article in articles:
-            print("-" * 80)
-            print(f"Title: {article.get('title', 'N/A')}")
-            print(f"Published: {article.get('published_at_utc', 'N/A')}")
-            print(f"Source: {article.get('source_name', 'N/A')}")
+        # New entity header
+        if entity_id_val != current_entity:
+            current_entity = entity_id_val
+            current_window = None
+            print(f"\n{'=' * 80}")
+            print(f"📊 {entity_name}")
+            print(f"{'=' * 80}")
+        
+        # New window header
+        if window != current_window:
+            current_window = window
             
-            body = article.get('body', '')
-            if body:
-                preview = body[:500] + "..." if len(body) > 500 else body
-                print(f"\nBody Preview:\n{preview}\n")
+            timeframe_labels = {
+                3: "🔥 BREAKING",
+                7: "📰 DEVELOPING", 
+                14: "📊 ONGOING",
+                30: "📈 LONG-TERM"
+            }
             
-            print()
+            label = timeframe_labels.get(window, f"{window}d")
+            print(f"\n  [{label} ({window}d window)]")
+            print(f"  {'-' * 76}")
+        
+        # Cluster info
+        print(f"    • {tag_val} | {size} articles")
+        print(f"      ID: {cluster_id}")
+        
+        # Show summary if available
+        summary = cluster.get('summary', {})
+        if summary and summary.get('text'):
+            summary_text = summary['text'][:100]
+            print(f"      Summary: {summary_text}...")
+        
+        # Show stance if available
+        stance = cluster.get('stance', {})
+        if stance:
+            label = stance.get('label', 'unknown')
+            conf = stance.get('confidence', 0)
+            print(f"      Stance: {label.upper()} ({conf:.0%})")
+        
+        # Show articles if requested
+        if show_articles:
+            article_refs = cluster.get('articles', [])
+            if article_refs:
+                print(f"      Articles:")
+                for idx, article in enumerate(article_refs[:3], 1):
+                    title = article.get('title', 'No title')
+                    print(f"        {idx}. {title}")
+                if len(article_refs) > 3:
+                    print(f"        ... and {len(article_refs) - 3} more")
+        
+        print()
 
 
-def view_statistics():
-    """View clustering statistics."""
-    stats = get_clustering_stats()
+def show_stats():
+    """Show clustering statistics."""
     
-    print(f"\n{'=' * 80}")
+    print("=" * 80)
     print("CLUSTERING STATISTICS")
-    print(f"{'=' * 80}\n")
+    print("=" * 80)
     
-    print(f"Total Clusters: {stats['total_clusters']}")
-    print(f"  Non-noise: {stats['non_noise_clusters']}")
-    print(f"  Noise: {stats['noise_clusters']}")
+    clusters_col = get_collection('story_clusters')
     
-    print(f"\n{'=' * 80}")
-    print("TOP TAGS")
-    print(f"{'=' * 80}")
+    # Total clusters
+    total = clusters_col.count_documents({})
+    print(f"\nTotal clusters: {total}")
     
-    for tag_stat in stats['by_tag'][:10]:
-        print(f"  {tag_stat['_id']:<30} {tag_stat['count']:>3} clusters, {tag_stat['total_articles']:>4} articles")
+    # By timeframe
+    print("\nBy Timeframe:")
+    for window in [3, 7, 14, 30]:
+        count = clusters_col.count_documents({'window_days': window})
+        print(f"  {window}d: {count} clusters")
     
-    print(f"\n{'=' * 80}")
-    print("TOP ENTITIES")
-    print(f"{'=' * 80}")
+    # By entity
+    print("\nTop 10 Entities:")
+    pipeline = [
+        {'$group': {
+            '_id': '$entity_name',
+            'count': {'$sum': 1}
+        }},
+        {'$sort': {'count': -1}},
+        {'$limit': 10}
+    ]
     
-    for entity_stat in stats['by_entity'][:10]:
-        print(f"  {entity_stat['_id']:<30} {entity_stat['count']:>3} clusters, {entity_stat['total_articles']:>4} articles")
+    for result in clusters_col.aggregate(pipeline):
+        entity = result['_id']
+        count = result['count']
+        print(f"  {entity}: {count} clusters")
     
-    print()
+    # By tag
+    print("\nTop 10 Tags:")
+    pipeline = [
+        {'$group': {
+            '_id': '$tag',
+            'count': {'$sum': 1}
+        }},
+        {'$sort': {'count': -1}},
+        {'$limit': 10}
+    ]
+    
+    for result in clusters_col.aggregate(pipeline):
+        tag = result['_id']
+        count = result['count']
+        print(f"  {tag}: {count} clusters")
+    
+    # Clusters with stance
+    with_stance = clusters_col.count_documents({'stance': {'$exists': True}})
+    print(f"\nClusters with stance: {with_stance}/{total} ({with_stance/max(total,1)*100:.1f}%)")
+    
+    # Clusters with summary
+    with_summary = clusters_col.count_documents({'summary': {'$exists': True}})
+    print(f"Clusters with summary: {with_summary}/{total} ({with_summary/max(total,1)*100:.1f}%)")
 
 
-def view_ready_for_stance():
-    """View clusters ready for stance detection."""
-    from processing.clustering.cluster_mongodb_writer import get_clusters_for_stance_detection
+def compare_timeframes(entity_id):
+    """Compare entity across timeframes."""
     
-    clusters = get_clusters_for_stance_detection(min_size=3, max_age_days=7)
+    print("=" * 80)
+    print(f"TIMEFRAME COMPARISON")
+    print("=" * 80)
+    
+    clusters_col = get_collection('story_clusters')
+    
+    # Get clusters for this entity
+    clusters = list(clusters_col.find({'entity_id': entity_id}).sort('window_days', 1))
     
     if not clusters:
-        print("\n❌ No clusters ready for stance detection")
+        print(f"\n❌ No clusters for entity: {entity_id}")
         return
     
-    print(f"\n{'=' * 80}")
-    print("CLUSTERS READY FOR STANCE DETECTION")
-    print(f"{'=' * 80}\n")
+    entity_name = clusters[0].get('entity_name', 'Unknown')
+    print(f"\nEntity: {entity_name}")
     
+    # Group by window
+    by_window = {}
     for cluster in clusters:
-        print(format_cluster_summary(cluster))
+        window = cluster.get('window_days')
+        if window not in by_window:
+            by_window[window] = []
+        by_window[window].append(cluster)
     
-    print(f"\nTotal clusters ready: {len(clusters)}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="View story clusters from MongoDB")
-    
-    parser.add_argument("--entity", help="Filter by entity (ticker or entity_id)")
-    parser.add_argument("--tag", help="Filter by tag")
-    parser.add_argument("--cluster-id", help="View specific cluster details")
-    parser.add_argument("--min-size", type=int, default=2, help="Minimum cluster size (default: 2)")
-    parser.add_argument("--latest", action="store_true", help="Show only latest clusters (24h)")
-    parser.add_argument("--hours", type=int, default=24, help="Hours for --latest (default: 24)")
-    parser.add_argument("--stats", action="store_true", help="Show statistics")
-    parser.add_argument("--stance-ready", action="store_true", help="Show clusters ready for stance detection")
-    parser.add_argument("--max-results", type=int, default=50, help="Maximum results to show (default: 50)")
-    
-    args = parser.parse_args()
-    
-    try:
-        if args.stats:
-            view_statistics()
-        elif args.stance_ready:
-            view_ready_for_stance()
-        elif args.cluster_id:
-            view_cluster_details(args.cluster_id)
-        elif args.entity:
-            view_clusters_by_entity(args.entity, args.min_size)
-        elif args.tag:
-            view_clusters_by_tag(args.tag, args.min_size)
-        elif args.latest:
-            view_latest_clusters(args.hours, args.min_size)
-        else:
-            view_all_clusters(args.min_size, args.max_results)
-    
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+    # Compare windows
+    for window in sorted(by_window.keys()):
+        window_clusters = by_window[window]
+        
+        print(f"\n{window}d window: {len(window_clusters)} clusters")
+        print("-" * 40)
+        
+        # Group by tag
+        by_tag = {}
+        for cluster in window_clusters:
+            tag = cluster.get('tag')
+            if tag not in by_tag:
+                by_tag[tag] = []
+            by_tag[tag].append(cluster)
+        
+        for tag, tag_clusters in sorted(by_tag.items()):
+            total_articles = sum(c.get('cluster_metadata', {}).get('size', 0) for c in tag_clusters)
+            print(f"  {tag}: {len(tag_clusters)} cluster(s), {total_articles} articles")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    
+    parser.add_argument('--entity', help='Filter by entity ID')
+    parser.add_argument('--window', type=int, choices=[3, 7, 14, 30], help='Filter by window')
+    parser.add_argument('--tag', help='Filter by tag')
+    parser.add_argument('--articles', action='store_true', help='Show articles')
+    parser.add_argument('--stats', action='store_true', help='Show statistics')
+    parser.add_argument('--compare', help='Compare entity across timeframes')
+    
+    args = parser.parse_args()
+    
+    if args.stats:
+        show_stats()
+    elif args.compare:
+        compare_timeframes(args.compare)
+    else:
+        view_clusters(
+            entity_id=args.entity,
+            window_days=args.window,
+            tag=args.tag,
+            show_articles=args.articles
+        )
