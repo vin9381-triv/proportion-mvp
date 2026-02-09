@@ -1,11 +1,10 @@
 """
-Multi-Timeframe Clustering - SNAPSHOT MODE (FIXED)
+Story-First Multi-Timeframe Clustering (Snapshot Mode)
 
-Guarantees:
-- Exactly ONE cluster per (entity, window_days, tag)
-- Old clusters are deleted before insert
-- DBSCAN labels are internal only
-- Safe to re-run without duplicates
+- DBSCAN clusters = stories
+- Tags are metadata, not identity
+- Snapshot overwrite per (entity, window)
+- Strong noise suppression
 """
 
 import yaml
@@ -28,17 +27,20 @@ TAG_CONFIG_PATH = "config/clustering_tags.yaml"
 
 TIME_WINDOWS = [3, 7, 14, 30]
 
-MIN_ARTICLES = {
+MIN_ARTICLES_WINDOW = {
     3: 3,
-    7: 5,
-    14: 8,
-    30: 10,
+    7: 4,
+    14: 5,
+    30: 6,
 }
 
-EXCLUDED_TAGS = {"crime_noise", "spam_clickbait", "other"}
+MIN_STORY_SIZE = 3
+MIN_COHESION = 0.55
 
 DBSCAN_EPS = 0.5
 DBSCAN_MIN_SAMPLES = 2
+
+EXCLUDED_TAGS = {"crime_noise", "spam_clickbait", "other"}
 
 
 # ============================================================
@@ -79,12 +81,11 @@ def load_entities():
 
 def load_tag_config():
     with open(TAG_CONFIG_PATH, "r") as f:
-        config = yaml.safe_load(f)
-    return config.get("tags", {})
+        return yaml.safe_load(f).get("tags", {})
 
 
 # ============================================================
-# TAGGER
+# TAGGER (METADATA ONLY)
 # ============================================================
 
 class ArticleTagger:
@@ -97,16 +98,7 @@ class ArticleTagger:
             (article.get("raw_text") or "")
         ).lower()
 
-        # Noise first
-        for tag in ["crime_noise", "spam_clickbait"]:
-            for kw in self.tag_config.get(tag, {}).get("keywords", []):
-                if kw.lower() in text:
-                    return tag
-
-        # Normal tags
         for tag, cfg in self.tag_config.items():
-            if tag in {"crime_noise", "spam_clickbait"}:
-                continue
             for kw in cfg.get("keywords", []):
                 if kw.lower() in text:
                     return tag
@@ -115,13 +107,29 @@ class ArticleTagger:
 
 
 # ============================================================
-# CLUSTERING CORE
+# UTILS
 # ============================================================
 
-def cluster_entity_for_window(entity, window_days, tagger, embedded_col, clusters_col):
-    print(f"\n  [{window_days}d window]")
+def cosine_cohesion(vectors):
+    if len(vectors) < 2:
+        return 0.0
 
-    # 🔥 SNAPSHOT DELETE (CORRECT)
+    centroid = np.mean(vectors, axis=0)
+    sims = [
+        np.dot(v, centroid) / (np.linalg.norm(v) * np.linalg.norm(centroid))
+        for v in vectors
+    ]
+    return float(np.mean(sims))
+
+
+# ============================================================
+# CLUSTERING
+# ============================================================
+
+def cluster_entity_window(entity, window_days, tagger, embedded_col, clusters_col):
+    print(f"  [{window_days}d window]")
+
+    # SNAPSHOT DELETE
     clusters_col.delete_many({
         "entity_id": entity["entity_id"],
         "window_days": window_days,
@@ -138,162 +146,152 @@ def cluster_entity_for_window(entity, window_days, tagger, embedded_col, cluster
         entity_id=entity["entity_id"],
     )
 
-    if len(raw_ids) < MIN_ARTICLES[window_days]:
-        print("    ⚠️ Not enough raw articles")
+    if len(raw_ids) < MIN_ARTICLES_WINDOW[window_days]:
         return 0
 
     articles = list(
         embedded_col.find(get_clustering_candidates_query(raw_ids))
     )
 
-    if len(articles) < MIN_ARTICLES[window_days]:
-        print("    ⚠️ Not enough embedded articles")
+    vectors = []
+    valid_articles = []
+
+    for a in articles:
+        emb = a.get("embeddings", {}).get("body")
+        if emb:
+            vectors.append(emb)
+            valid_articles.append(a)
+
+    if len(vectors) < MIN_ARTICLES_WINDOW[window_days]:
         return 0
 
-    # Tag buckets
-    tag_buckets = defaultdict(list)
-    for article in articles:
-        tag = tagger.tag_article(article)
-        if tag not in EXCLUDED_TAGS:
-            tag_buckets[tag].append(article)
+    X = np.array(vectors)
+    labels = run_dbscan(X, eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES)
 
-    clusters_created = 0
+    clusters = defaultdict(list)
+    for label, article in zip(labels, valid_articles):
+        if label == -1:
+            continue
+        clusters[label].append(article)
 
-    # 🚨 ONE CLUSTER PER TAG — ENFORCED
-    for tag, tag_articles in tag_buckets.items():
-        if len(tag_articles) < 2:
+    stories_written = 0
+
+    for label, members in clusters.items():
+        if len(members) < MIN_STORY_SIZE:
             continue
 
-        vectors = []
-        valid_articles = []
+        story_vectors = [
+            a["embeddings"]["body"] for a in members
+        ]
 
-        for a in tag_articles:
-            emb = a.get("embeddings", {}).get("body")
-            if emb:
-                vectors.append(emb)
-                valid_articles.append(a)
-
-        if len(vectors) < 2:
+        cohesion = cosine_cohesion(story_vectors)
+        if cohesion < MIN_COHESION:
             continue
 
-        X = np.array(vectors)
-        labels = run_dbscan(X, eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES)
+        # Assign tags AFTER story formation
+        tag_counts = defaultdict(int)
+        for a in members:
+            tag = tagger.tag_article(a)
+            if tag not in EXCLUDED_TAGS:
+                tag_counts[tag] += 1
 
-        # 🔒 COLLAPSE ALL LABELS → ONE SNAPSHOT CLUSTER
-        members = []
-        for label, article in zip(labels, valid_articles):
-            if label == -1:
-                continue
-            members.append(article)
+        tags = sorted(tag_counts, key=tag_counts.get, reverse=True)
 
-        if not members:
-            continue
-
-        write_cluster(
+        write_story_cluster(
             entity=entity,
-            tag=tag,
             window_days=window_days,
             members=members,
+            cohesion=cohesion,
+            tags=tags,
             clusters_col=clusters_col,
         )
 
-        clusters_created += 1
+        stories_written += 1
 
-    print(f"    ✅ Created {clusters_created} clusters")
-    return clusters_created
+    return stories_written
 
 
-def write_cluster(entity, tag, window_days, members, clusters_col):
+def write_story_cluster(entity, window_days, members, cohesion, tags, clusters_col):
     now = datetime.utcnow()
-    date_str = now.strftime("%Y%m%d")
 
-    # ✅ FIXED ID (NO LABEL)
-    cluster_id = f"{entity['entity_id']}|{tag}|{window_days}d|{date_str}"
-
-    article_refs = []
     article_ids = []
+    article_refs = []
     published_times = []
     embeddings = []
 
     for a in members:
+        article_ids.append(a["_id"])
         article_refs.append({
             "article_id": a["_id"],
             "title": a.get("title"),
             "published_at_utc": a.get("published_at_utc"),
-            "raw_article_id": a.get("raw_article_id"),
         })
-
-        article_ids.append(a["_id"])
 
         if a.get("published_at_utc"):
             published_times.append(a["published_at_utc"])
 
-        emb = a.get("embeddings", {}).get("body")
-        if emb:
-            embeddings.append(emb)
+        embeddings.append(a["embeddings"]["body"])
 
-    centroid = np.mean(np.array(embeddings), axis=0).tolist() if embeddings else None
+    centroid = np.mean(np.array(embeddings), axis=0).tolist()
 
-    doc = {
-        "cluster_id": cluster_id,
+    story_id = f"{entity['entity_id']}|{window_days}d|{hash(tuple(article_ids))}"
+
+    clusters_col.insert_one({
+        "story_id": story_id,
 
         "entity_id": entity["entity_id"],
         "entity_name": entity["entity_name"],
         "entity_type": entity["entity_type"],
         "ticker": entity.get("ticker"),
 
-        "tag": tag,
         "window_days": window_days,
         "timeframe": f"{window_days}d",
 
+        "tags": tags[:3],
+        "cohesion": cohesion,
+
         "articles": article_refs,
         "article_ids": article_ids,
-
         "centroid": centroid,
 
-        "cluster_metadata": {
+        "story_metadata": {
             "size": len(article_ids),
-            "first_published": min(published_times) if published_times else None,
-            "last_published": max(published_times) if published_times else None,
+            "first_published": min(published_times),
+            "last_published": max(published_times),
         },
 
         "created_at": now,
         "last_updated": now,
-    }
-
-    clusters_col.insert_one(doc)
+    })
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-def run_multi_timeframe_clustering():
-    print("=" * 80)
-    print("MULTI-TIMEFRAME CLUSTERING — SNAPSHOT MODE (FIXED)")
-    print("=" * 80)
+def run_story_clustering():
+    print("STORY-FIRST MULTI-TIMEFRAME CLUSTERING")
 
     entities = load_entities()
-    tag_config = load_tag_config()
-    tagger = ArticleTagger(tag_config)
+    tagger = ArticleTagger(load_tag_config())
 
     embedded_col = get_collection("articles_embedded")
     clusters_col = get_collection("story_clusters")
 
-    for idx, entity in enumerate(entities, 1):
-        print(f"\n[{idx}/{len(entities)}] {entity['entity_name']}")
-
-        for window_days in TIME_WINDOWS:
-            cluster_entity_for_window(
+    for entity in entities:
+        print(f"\n{entity['entity_name']}")
+        for window in TIME_WINDOWS:
+            count = cluster_entity_window(
                 entity,
-                window_days,
+                window,
                 tagger,
                 embedded_col,
                 clusters_col,
             )
+            print(f"    {window}d → {count} stories")
 
-    print("\n✅ CLUSTERING COMPLETE")
+    print("\nDONE")
 
 
 if __name__ == "__main__":
-    run_multi_timeframe_clustering()
+    run_story_clustering()
