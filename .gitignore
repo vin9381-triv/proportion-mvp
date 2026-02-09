@@ -43,6 +43,7 @@ processing/clustering/diagnostic_test.py
 .DS_Store
 
 semantic_dedup/
+processing/dashboard
 
 ############################
 # Logs / outputs
