@@ -1,195 +1,172 @@
 #!/usr/bin/env python3
 """
-Cluster Summarizer - BART Model (Better for Summarization)
-=========================================================
-Uses facebook/bart-large-cnn - specifically designed for summarization
+Story Summarizer (Local, BART)
+=============================
+
+Generates a concise, factual summary for a STORY cluster.
+Optimized for downstream stance detection.
 """
 
-import json
-from pathlib import Path
 from datetime import datetime
 from typing import List, Dict
 from transformers import pipeline
 
 
+# ============================================================
+# CONFIG
+# ============================================================
+
+MAX_ARTICLES = 6          # limit context
+MAX_BODY_CHARS = 400      # per article
+MAX_INPUT_CHARS = 1200    # BART-safe
+SUMMARY_MAX_LEN = 120
+SUMMARY_MIN_LEN = 40
+
+
+# ============================================================
+# SUMMARIZER
+# ============================================================
+
 class ClusterSummarizer:
-    """Generate cluster summaries using BART summarization model."""
+    """Story-level summarizer using BART."""
 
     def __init__(self, test_mode: bool = False):
         self.test_mode = test_mode
-
-        # BART is specifically designed for summarization
         self.model_id = "facebook/bart-large-cnn"
 
-        print(f"Loading model: {self.model_id}...")
+        print(f"🧠 Loading summarization model: {self.model_id}")
         self.summarizer = pipeline(
             "summarization",
             model=self.model_id,
             device=-1,  # CPU
         )
-        print("Model loaded!")
+        print("✅ Summarizer ready")
 
-        if self.test_mode:
-            self.test_dir = Path("test_outputs/summaries")
-            self.test_dir.mkdir(parents=True, exist_ok=True)
-            print(f"📁 Test mode: {self.test_dir}")
+    # --------------------------------------------------------
 
     def summarize_cluster(self, cluster: Dict, articles: List[Dict]) -> Dict:
-        """Generate summary for cluster."""
+        """
+        Generate a structured summary for a STORY.
+
+        Returns:
+        {
+          summary: str
+          main_points: list[str]
+          timeframe: str
+          article_count: int
+          generated_at: datetime
+        }
+        """
         if not articles:
             return self._empty_summary()
 
-        cluster_id = cluster.get("cluster_id", "unknown")
+        # Sort articles chronologically (story progression)
+        articles = sorted(
+            articles,
+            key=lambda a: a.get("published_at_utc") or datetime.utcnow()
+        )
 
-        if self.test_mode:
-            print(f"\n{'='*80}\nSUMMARIZING: {cluster_id}\n{'='*80}")
+        # Build input text
+        combined_text = self._build_input_text(articles)
 
-        # Combine article content
-        combined_text = self._combine_articles(cluster, articles[:10])
-        
-        # Generate summary using BART
+        # Run model
         summary_text = self._generate_summary(combined_text)
-        
-        # Extract structured information
-        summary = self._structure_summary(cluster, articles, summary_text)
 
-        summary["article_count"] = len(articles)
-        summary["generated_at"] = datetime.utcnow()
+        # Structure output
+        return {
+            "summary": summary_text,
+            "main_points": self._extract_main_points(articles),
+            "timeframe": self._extract_timeframe(articles),
+            "article_count": len(articles),
+            "generated_at": datetime.utcnow(),
+        }
 
-        if self.test_mode:
-            self._save_test_output(cluster_id, combined_text, summary_text, summary)
-            print(f"✅ Summary: {summary['summary'][:90]}...")
+    # ========================================================
+    # INTERNALS
+    # ========================================================
 
-        return summary
+    def _build_input_text(self, articles: List[Dict]) -> str:
+        """
+        Build clean, factual input for BART.
+        Focus: what happened, not opinion.
+        """
+        chunks = []
 
-    def _combine_articles(self, cluster: Dict, articles: List[Dict]) -> str:
-        """Combine articles into single text for summarization."""
-        texts = []
-        for article in articles:
-            title = article.get('title', '')
-            body = article.get('body', '')[:300]  # Limit body length
+        for article in articles[:MAX_ARTICLES]:
+            title = article.get("title", "").strip()
+            body = article.get("body", "").strip()
+
+            if body:
+                body = body[:MAX_BODY_CHARS]
+
             if title:
-                texts.append(f"{title}. {body}")
-        
-        combined = " ".join(texts)
-        return combined[:1024]  # BART max input length
+                chunks.append(f"{title}. {body}")
+            elif body:
+                chunks.append(body)
+
+        text = " ".join(chunks)
+        return text[:MAX_INPUT_CHARS]
+
+    # --------------------------------------------------------
 
     def _generate_summary(self, text: str) -> str:
-        """Generate summary using BART."""
-        if self.test_mode:
-            print("🤖 Running BART summarization...")
-
+        """Run BART summarization."""
         try:
             result = self.summarizer(
                 text,
-                max_length=130,
-                min_length=30,
+                max_length=SUMMARY_MAX_LEN,
+                min_length=SUMMARY_MIN_LEN,
                 do_sample=False,
-                truncation=True
+                truncation=True,
             )
-            return result[0]['summary_text']
+            return result[0]["summary_text"]
         except Exception as e:
+            # Fail gracefully — never break stance pipeline
             if self.test_mode:
-                print(f"⚠️  Model error: {e}")
+                print(f"⚠️ Summarizer error: {e}")
             return text[:200]
 
-    def _structure_summary(self, cluster: Dict, articles: List[Dict], summary_text: str) -> Dict:
-        """Structure summary into required format."""
-        # Extract main points from titles
-        main_points = []
+    # --------------------------------------------------------
+
+    def _extract_main_points(self, articles: List[Dict]) -> List[str]:
+        """
+        Use article titles as grounded main points.
+        Keeps stance resolver anchored to facts.
+        """
+        points = []
         for article in articles[:5]:
-            title = article.get('title', '')
-            if title and title not in main_points:
-                main_points.append(title)
+            title = article.get("title")
+            if title and title not in points:
+                points.append(title)
+        return points
 
-        # Extract entities (simple approach: capitalized words)
-        entity_name = cluster.get('entity_name', '')
-        key_entities = [entity_name] if entity_name else []
-        
-        # Extract timeframe from dates
-        timeframe = self._extract_timeframe(articles)
-
-        return {
-            "summary": summary_text,
-            "main_points": main_points[:5],
-            "key_entities": key_entities,
-            "timeframe": timeframe,
-        }
+    # --------------------------------------------------------
 
     def _extract_timeframe(self, articles: List[Dict]) -> str:
-        """Extract timeframe from article dates."""
-        dates = []
-        for article in articles:
-            pub_date = article.get('published_at_utc')
-            if pub_date and hasattr(pub_date, 'strftime'):
-                dates.append(pub_date)
-        
-        if dates:
-            min_date = min(dates)
-            max_date = max(dates)
-            if min_date == max_date:
-                return min_date.strftime("%b %d, %Y")
-            else:
-                return f"{min_date.strftime('%b %d')} - {max_date.strftime('%b %d, %Y')}"
-        
-        return "Unknown"
+        dates = [
+            a["published_at_utc"]
+            for a in articles
+            if a.get("published_at_utc")
+        ]
+
+        if not dates:
+            return "Unknown"
+
+        start = min(dates)
+        end = max(dates)
+
+        if start.date() == end.date():
+            return start.strftime("%b %d, %Y")
+
+        return f"{start.strftime('%b %d')} – {end.strftime('%b %d, %Y')}"
+
+    # --------------------------------------------------------
 
     def _empty_summary(self) -> Dict:
-        """Return empty summary."""
         return {
-            "summary": "Empty cluster",
+            "summary": "No content available.",
             "main_points": [],
-            "key_entities": [],
             "timeframe": "",
             "article_count": 0,
             "generated_at": datetime.utcnow(),
         }
-
-    def _save_test_output(self, cluster_id: str, input_text: str, summary_text: str, parsed: Dict):
-        """Save test outputs."""
-        if not self.test_mode:
-            return
-
-        cluster_dir = self.test_dir / cluster_id
-        cluster_dir.mkdir(parents=True, exist_ok=True)
-
-        (cluster_dir / "input_text.txt").write_text(input_text, encoding="utf-8")
-        (cluster_dir / "summary_text.txt").write_text(summary_text, encoding="utf-8")
-        (cluster_dir / "parsed_summary.json").write_text(
-            json.dumps(parsed, indent=2, default=str),
-            encoding="utf-8"
-        )
-
-
-def test_summarizer():
-    """Test function."""
-    print("="*80)
-    print("TESTING BART SUMMARIZER")
-    print("="*80)
-
-    test_cluster = {
-        "cluster_id": "TEST_ai_chip_20260128",
-        "entity_name": "Microsoft",
-        "tag": "ai_innovation",
-    }
-
-    test_articles = [
-        {
-            "title": "Microsoft unveils Maia 200 AI chip",
-            "body": "Microsoft announced the Maia 200, a custom AI chip designed to accelerate AI workloads in its Azure cloud infrastructure.",
-        },
-        {
-            "title": "New chip promises 3x performance boost",
-            "body": "The Maia 200 is designed to deliver three times the performance of previous generation chips for AI inference tasks.",
-        },
-    ]
-
-    summarizer = ClusterSummarizer(test_mode=True)
-    summary = summarizer.summarize_cluster(test_cluster, test_articles)
-
-    print("\nFINAL RESULT:")
-    print(json.dumps(summary, indent=2, default=str))
-
-
-if __name__ == "__main__":
-    test_summarizer()
